@@ -4,6 +4,7 @@
 // ── State ──────────────────────────────────────────────────────────────────
 let recording = false;
 let pendingSteps = [];   // steps captured during recording (before save)
+let pendingSourceLabel = ''; // sourceRecordLabel from STOP_RECORDING response
 let savedWorkflows = []; // loaded from chrome.storage.local
 let selectedWorkflow = null;
 let activeRunId = null;
@@ -143,6 +144,7 @@ btnStopRec.addEventListener('click', async () => {
 
     const steps = result?.steps ?? [];
     pendingSteps = steps;
+    pendingSourceLabel = result?.sourceRecordLabel || '';
 
     if (steps.length > 0) {
       workflowNameForm.classList.remove('hidden');
@@ -168,7 +170,7 @@ btnSaveWorkflow.addEventListener('click', async () => {
     id: 'wf_' + Date.now(),
     name,
     createdAt: new Date().toISOString(),
-    sourceRecordLabel: pendingSteps._sourceRecordLabel || '',
+    sourceRecordLabel: pendingSourceLabel,
     steps: pendingSteps.map((s, i) => ({ ...s, order: i }))
   };
   savedWorkflows.push(workflow);

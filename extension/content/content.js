@@ -289,13 +289,14 @@ function sendStepStatus(runId, stepId, status, detail) {
 function waitForConfirmation(runId, stepId, timeoutMs = 60000) {
   return new Promise(resolve => {
     const timer = setTimeout(() => { cleanup(); resolve(false); }, timeoutMs);
-    function onMsg(msg) {
-      if (msg.type === 'CONFIRM_STEP' && msg.runId === runId && msg.stepId === stepId) {
+    function onConfirm(e) {
+      const msg = e.detail;
+      if (msg.runId === runId && msg.stepId === stepId) {
         cleanup(); resolve(msg.confirmed);
       }
     }
-    chrome.runtime.onMessage.addListener(onMsg);
-    function cleanup() { clearTimeout(timer); chrome.runtime.onMessage.removeListener(onMsg); }
+    document.addEventListener('__replay_confirm__', onConfirm);
+    function cleanup() { clearTimeout(timer); document.removeEventListener('__replay_confirm__', onConfirm); }
     notifyPanel({ type: 'CONFIRM_REQUIRED', runId, stepId });
   });
 }
@@ -519,8 +520,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           break;
 
         case 'CONFIRM_STEP':
+          document.dispatchEvent(new CustomEvent('__replay_confirm__', { detail: msg }));
+          sendResponse({ ok: true });
+          break;
+
         case 'SENSITIVE_VALUE':
-          // handled by replayer's internal listeners; just acknowledge
           sendResponse({ ok: true });
           break;
 
