@@ -286,7 +286,7 @@ function sendStepStatus(runId, stepId, status, detail) {
   notifyPanel({ type: 'STEP_STATUS', runId, stepId, status, detail });
 }
 
-function waitForConfirmation(runId, stepId, timeoutMs = 60000) {
+function waitForConfirmation(runId, stepId, label, timeoutMs = 60000) {
   return new Promise(resolve => {
     const timer = setTimeout(() => { cleanup(); resolve(false); }, timeoutMs);
     function onConfirm(e) {
@@ -297,7 +297,7 @@ function waitForConfirmation(runId, stepId, timeoutMs = 60000) {
     }
     document.addEventListener('__replay_confirm__', onConfirm);
     function cleanup() { clearTimeout(timer); document.removeEventListener('__replay_confirm__', onConfirm); }
-    notifyPanel({ type: 'CONFIRM_REQUIRED', runId, stepId });
+    notifyPanel({ type: 'CONFIRM_REQUIRED', runId, stepId, label });
   });
 }
 
@@ -349,7 +349,7 @@ async function startReplay(workflow, resumeRunId) {
 
     // Consequential steps need explicit confirmation
     if (step.consequential) {
-      const confirmed = await waitForConfirmation(runId, step.id);
+      const confirmed = await waitForConfirmation(runId, step.id, step.label);
       if (!confirmed) {
         sendStepStatus(runId, step.id, 'failed', 'cancelled by user');
         notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: 'Cancelled before consequential step' });
@@ -457,8 +457,15 @@ async function runVerification(workflow) {
     for (const c of customers) {
       if (c.id === currentId) continue;
       const prev = snapData[snapKey].find(x => x.id === c.id);
-      if (prev && JSON.stringify(c) !== JSON.stringify(prev)) {
-        fields.push({ field: `collateral: ${c.id}`, expected: 'unchanged', observed: 'CHANGED', status: 'failed' });
+      // Only flag collateral if updatedAt changed — the CRM always bumps updatedAt on any
+      // save, so this precisely detects saves during replay (not pre-existing recording changes).
+      if (prev && prev.updatedAt !== c.updatedAt) {
+        fields.push({
+          field: `collateral: ${c.id} (${c.name || c.id})`,
+          expected: `updatedAt unchanged (${prev.updatedAt})`,
+          observed: `updatedAt changed to ${c.updatedAt}`,
+          status: 'failed'
+        });
       }
     }
   }
