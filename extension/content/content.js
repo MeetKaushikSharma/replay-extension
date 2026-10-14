@@ -124,7 +124,8 @@ const SENSITIVE_PATTERN = /pass|pwd|secret|token|card|cvv|ssn|otp/i;
 let _recording = false;
 let _steps = [];
 let _badge = null;
-const _pendingChanges = new Map(); // el → { timer }
+const _pendingChanges = new Map();    // el → { timer }
+const _lastRecordedValue = new Map(); // el → last value committed to _steps
 
 function getCurrentRecordId() {
   const m = location.hash.match(/#\/customers\/([^/?]+)/);
@@ -187,14 +188,17 @@ function recordChangeStep(el) {
 
   const value = sensitive ? null : el.value;
 
-  // Deduplicate: skip if last step for same testid has same value
-  const last = [..._steps].reverse().find(s => s.target.testid && s.target.testid === target.testid);
-  if (last && last.value === value && !sensitive) return;
+  // Bulletproof dedup: skip if this exact element was already committed with this exact value.
+  // Keying by element reference (not testid string) prevents false positives across
+  // different DOM instances, and catches the input+change double-fire race.
+  if (!sensitive && _lastRecordedValue.get(el) === value) return;
 
   const step = { id: makeStepId(), order: _steps.length, action, target, value,
                  sensitive, consequential: false, label: humanLabel(action, target, value) };
   _steps.push(step);
+  if (!sensitive) _lastRecordedValue.set(el, value); // remember so next event deduplicates
   notifyPanel({ type: 'STEP_RECORDED', step });
+  updateBadgeCount(_steps.length);
 }
 
 function handleClick(e) {
@@ -221,6 +225,7 @@ function handleClick(e) {
                  label: humanLabel('click', target, null) };
   _steps.push(step);
   notifyPanel({ type: 'STEP_RECORDED', step });
+  updateBadgeCount(_steps.length);
 }
 
 function injectBadge() {
@@ -230,9 +235,13 @@ function injectBadge() {
   w.style.cssText = 'position:fixed;top:12px;right:12px;z-index:2147483647;background:#e53e3e;' +
     'color:white;font-family:monospace;font-size:13px;font-weight:bold;padding:4px 10px;' +
     'border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:none;user-select:none;';
-  w.textContent = '● REC';
+  w.textContent = '● REC (0)';
   document.body.appendChild(w);
   _badge = w;
+}
+function updateBadgeCount(n) {
+  const b = document.getElementById('__replay_badge_wrapper__');
+  if (b) b.textContent = `● REC (${n})`;
 }
 function removeBadge() {
   if (_badge) { _badge.remove(); _badge = null; }
@@ -243,6 +252,7 @@ function startRecording() {
   _recording = true;
   _steps = [];
   _pendingChanges.clear();
+  _lastRecordedValue.clear();
   document.addEventListener('input',  handleInputOrChange, { capture: true });
   document.addEventListener('change', handleInputOrChange, { capture: true });
   document.addEventListener('click',  handleClick,         { capture: true });

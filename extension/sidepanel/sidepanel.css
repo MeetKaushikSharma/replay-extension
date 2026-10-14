@@ -114,6 +114,20 @@ header#header {
 .workflow-card-meta { font-size: 10px; color: #555; }
 .workflow-card-steps { font-size: 11px; color: #666; margin-bottom: 8px; }
 .workflow-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.workflow-card-from { font-size: 11px; color: #7c7cff; margin-bottom: 6px; }
+
+/* Inspect panel */
+.inspect-panel { border-top: 1px solid #2d2d5e; margin-top: 8px; padding-top: 8px; }
+.inspect-steps { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.inspect-step {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  font-size: 10px; color: #888; line-height: 1.6;
+}
+.inspect-icon { font-size: 11px; color: #7c7cff; min-width: 12px; }
+.inspect-label { color: #b0b8cc; flex: 1; min-width: 0; }
+.inspect-target { color: #555; font-family: monospace; }
+.flag-consequential { color: #d97706; font-size: 9px; }
+.flag-sensitive { color: #e53e3e; font-size: 9px; }
 
 /* ── Replay tab ── */
 #replay-workflow-info {

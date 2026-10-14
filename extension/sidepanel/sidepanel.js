@@ -64,7 +64,18 @@ document.querySelectorAll('.tab').forEach(btn => {
 // ── Storage helpers ─────────────────────────────────────────────────────────
 async function loadWorkflows() {
   const data = await chrome.storage.local.get('workflows');
-  savedWorkflows = data.workflows || [];
+  savedWorkflows = (data.workflows || []).map(wf => ({
+    ...wf,
+    steps: wf.steps.map(s => ({
+      ...s,
+      // Heal missing labels for workflows saved before the label fix
+      label: s.label || (s.action === 'click'
+        ? `Click ${s.target?.testid || s.target?.ariaLabel || 'element'}`
+        : s.action === 'select'
+          ? `Select "${s.value}" in ${s.target?.testid || 'field'}`
+          : `Type into ${s.target?.testid || 'field'}`)
+    }))
+  }));
 }
 
 async function saveWorkflows() {
@@ -188,9 +199,11 @@ btnDiscardWorkflow.addEventListener('click', () => {
 });
 
 // ── Workflows list ──────────────────────────────────────────────────────────
+const ACTION_ICON = { select: '▼', type: '✎', click: '↵' };
+
 function renderWorkflowsList() {
   if (savedWorkflows.length === 0) {
-    workflowsList.innerHTML = '<p class="muted">No workflows saved yet.</p>';
+    workflowsList.innerHTML = '<p class="muted">No workflows saved yet.<br>Record one on the Record tab.</p>';
     return;
   }
   workflowsList.innerHTML = '';
@@ -198,16 +211,18 @@ function renderWorkflowsList() {
     const card = document.createElement('div');
     card.className = 'workflow-card';
     const date = new Date(wf.createdAt).toLocaleString();
+    const fromLabel = wf.sourceRecordLabel ? `Recorded from: <strong>${esc(wf.sourceRecordLabel)}</strong>` : '';
     card.innerHTML = `
       <div class="workflow-card-header">
         <span class="workflow-card-name">${esc(wf.name)}</span>
         <span class="workflow-card-meta">${esc(date)}</span>
       </div>
-      <div class="workflow-card-steps">${wf.steps.length} step${wf.steps.length !== 1 ? 's' : ''} · ID: <code>${esc(wf.id)}</code></div>
+      ${fromLabel ? `<div class="workflow-card-from">${fromLabel}</div>` : ''}
+      <div class="workflow-card-steps">${wf.steps.length} step${wf.steps.length !== 1 ? 's' : ''}</div>
       <div class="workflow-card-actions">
-        <button class="btn btn-primary btn-sm" data-action="select" data-id="${esc(wf.id)}">▶ Select</button>
-        <button class="btn btn-ghost btn-sm" data-action="inspect" data-id="${esc(wf.id)}">🔍 Inspect</button>
-        <button class="btn btn-danger btn-sm" data-action="delete" data-id="${esc(wf.id)}">✕ Delete</button>
+        <button class="btn btn-primary btn-sm" data-action="select" data-id="${esc(wf.id)}">▶ Use</button>
+        <button class="btn btn-ghost btn-sm" data-action="inspect" data-id="${esc(wf.id)}">🔍 Steps</button>
+        <button class="btn btn-danger btn-sm" data-action="delete" data-id="${esc(wf.id)}">✕</button>
       </div>
       <div class="inspect-panel hidden" id="inspect-${esc(wf.id)}"></div>
     `;
@@ -230,9 +245,21 @@ workflowsList.addEventListener('click', async (e) => {
   } else if (action === 'inspect') {
     const panel = document.getElementById(`inspect-${id}`);
     if (panel.classList.contains('hidden')) {
-      panel.innerHTML = '<ol>' + wf.steps.map(s =>
-        `<li style="font-size:10px;color:#888;margin:3px 0">${esc(s.order+1)}. ${esc(s.label)}</li>`
-      ).join('') + '</ol>';
+      panel.innerHTML = '<ol class="inspect-steps">' + wf.steps.map(s => {
+        const icon = ACTION_ICON[s.action] || '·';
+        const target = s.target?.testid || s.target?.ariaLabel || s.target?.id || '?';
+        const val    = s.value != null ? ` = "${esc(String(s.value))}"` : '';
+        const flags  = [
+          s.consequential ? '<span class="flag-consequential">⚠ consequential</span>' : '',
+          s.sensitive     ? '<span class="flag-sensitive">🔒 sensitive</span>'         : '',
+        ].filter(Boolean).join(' ');
+        return `<li class="inspect-step">
+          <span class="inspect-icon">${icon}</span>
+          <span class="inspect-label">${esc(s.label)}</span>
+          <span class="inspect-target">[${esc(target)}${val}]</span>
+          ${flags}
+        </li>`;
+      }).join('') + '</ol>';
       panel.classList.remove('hidden');
     } else {
       panel.classList.add('hidden');
@@ -405,7 +432,6 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'CONFIRM_REQUIRED': {
-      console.log('[RePlay panel] CONFIRM_REQUIRED received, label:', msg.label, 'full msg:', JSON.stringify(msg));
       const stepLabel = msg.label || msg.stepId || 'this step';
       pendingConfirm = { runId: msg.runId, stepId: msg.stepId, label: stepLabel };
       confirmMsg.textContent = `About to execute: "${stepLabel}". This is a consequential action. Proceed?`;
@@ -488,8 +514,11 @@ function renderVerifyResults(result) {
 // ── Live step list (record tab) ──────────────────────────────────────────────
 function addStepToList(step) {
   const li = document.createElement('li');
-  li.textContent = `${step.order + 1}. ${step.label}`;
+  const icon = ACTION_ICON[step.action] || '·';
+  const warn = step.consequential ? ' <span style="color:#d97706">⚠</span>' : '';
+  li.innerHTML = `<span style="color:#7c7cff;margin-right:5px">${icon}</span>${esc(step.label)}${warn}`;
   stepsList.appendChild(li);
+  noStepsMsg.classList.add('hidden');
 }
 
 // ── Error / warning display ──────────────────────────────────────────────────
