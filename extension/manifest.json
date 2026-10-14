@@ -1,14 +1,11 @@
 {
   "manifest_version": 3,
   "name": "RePlay – Teach Once, Automate Safely",
-  "version": "1.0.0",
-  "description": "Record a workflow once, replay it safely on multiple records. Local-first, no AI, no remote code.",
+  "version": "1.1.0",
+  "description": "Record a workflow once, replay it safely on any website. Local-first, no AI, no remote code.",
   "minimum_chrome_version": "114",
-  "permissions": ["storage", "sidePanel"],
-  "host_permissions": [
-    "http://localhost:5173/*",
-    "https://crm-demo-mu-sandy.vercel.app/*"
-  ],
+  "permissions": ["storage", "sidePanel", "scripting", "tabs"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },

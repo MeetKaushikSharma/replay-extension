@@ -31,9 +31,27 @@ function resolveTarget(target, document) {
     const el = document.getElementById(target.id);
     if (el) candidates.push(el);
   }
+  if (candidates.length === 0 && target.name) {
+    const els = Array.from(document.querySelectorAll(`${target.tag || '*'}[name="${target.name}"]`));
+    if (els.length) candidates.push(...els);
+  }
   if (candidates.length === 0 && target.ariaLabel) {
     const els = Array.from(document.querySelectorAll(`[aria-label="${target.ariaLabel}"]`));
     if (els.length) candidates.push(...els);
+  }
+  if (candidates.length === 0 && target.placeholder) {
+    const els = Array.from(document.querySelectorAll(`[placeholder="${target.placeholder}"]`));
+    if (els.length) candidates.push(...els);
+  }
+  if (candidates.length === 0 && target.text) {
+    const els = Array.from(document.querySelectorAll(target.tag || 'button, a, [role="button"]')).filter(el => el.textContent?.trim() === target.text);
+    if (els.length) candidates.push(...els);
+  }
+  if (candidates.length === 0 && target.selector) {
+    try {
+      const els = Array.from(document.querySelectorAll(target.selector));
+      if (els.length) candidates.push(...els);
+    } catch (_) {}
   }
   const visible = candidates.filter(isVisibleAndEnabled);
   if (visible.length === 0) return { el: null, count: 0, reason: 'missing' };
@@ -108,6 +126,34 @@ describe('Selector resolution', () => {
   test('fallback to aria-label when testid and id absent', () => {
     const document = makeDOM('<select aria-label="Status"></select>');
     const result = resolveTarget({ ariaLabel: 'Status' }, document);
+    assert.equal(result.count, 1);
+    assert.ok(result.el);
+  });
+
+  test('fallback to name attribute (YouTube/search inputs)', () => {
+    const document = makeDOM('<input name="search_query" />');
+    const result = resolveTarget({ name: 'search_query', tag: 'input' }, document);
+    assert.equal(result.count, 1);
+    assert.ok(result.el);
+  });
+
+  test('fallback to placeholder attribute', () => {
+    const document = makeDOM('<input placeholder="Search YouTube" />');
+    const result = resolveTarget({ placeholder: 'Search YouTube', tag: 'input' }, document);
+    assert.equal(result.count, 1);
+    assert.ok(result.el);
+  });
+
+  test('fallback to button text content', () => {
+    const document = makeDOM('<button class="custom-btn">Search</button>');
+    const result = resolveTarget({ text: 'Search', tag: 'button' }, document);
+    assert.equal(result.count, 1);
+    assert.ok(result.el);
+  });
+
+  test('fallback to CSS selector', () => {
+    const document = makeDOM('<div class="video-card"><a class="video-title" href="/watch">Title</a></div>');
+    const result = resolveTarget({ selector: '.video-card a.video-title' }, document);
     assert.equal(result.count, 1);
     assert.ok(result.el);
   });
@@ -227,5 +273,30 @@ describe('Verifier logic', () => {
     const data = JSON.stringify([{ id: 'c1', status: 'New', notes: '' }]);
     const result = makeVerifierLogic(data, 'c99', 'Follow-up', 'test');
     assert.equal(result.overall, 'unverified');
+  });
+
+  test('generic verifier verifies arbitrary site input value correctly', () => {
+    function makeGenericVerifier(steps, domValues) {
+      const fields = [];
+      for (const step of steps) {
+        if (step.action === 'type') {
+          const obs = domValues[step.id];
+          const pass = obs === step.value;
+          fields.push({ field: step.label, expected: step.value, observed: obs, status: pass ? 'success' : 'failed' });
+        } else if (step.action === 'press_enter' || step.action === 'click') {
+          fields.push({ field: step.label, expected: 'executed', observed: 'completed', status: 'success' });
+        }
+      }
+      const overall = fields.length > 0 && fields.every(f => f.status === 'success') ? 'success' : 'failed';
+      return { overall, fields };
+    }
+
+    const steps = [
+      { id: 's1', action: 'type', value: 'lofi hip hop', label: 'Type into search' },
+      { id: 's2', action: 'press_enter', value: 'Enter', label: 'Press Enter' }
+    ];
+    const result = makeGenericVerifier(steps, { s1: 'lofi hip hop' });
+    assert.equal(result.overall, 'success');
+    assert.equal(result.fields.length, 2);
   });
 });

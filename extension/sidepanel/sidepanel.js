@@ -70,10 +70,12 @@ async function loadWorkflows() {
       ...s,
       // Heal missing labels for workflows saved before the label fix
       label: s.label || (s.action === 'click'
-        ? `Click ${s.target?.testid || s.target?.ariaLabel || 'element'}`
-        : s.action === 'select'
-          ? `Select "${s.value}" in ${s.target?.testid || 'field'}`
-          : `Type into ${s.target?.testid || 'field'}`)
+        ? `Click ${s.target?.text || s.target?.ariaLabel || s.target?.testid || 'element'}`
+        : s.action === 'press_enter'
+          ? `Press Enter in ${s.target?.placeholder || s.target?.name || s.target?.ariaLabel || 'field'}`
+          : s.action === 'select'
+            ? `Select "${s.value}" in ${s.target?.testid || s.target?.name || 'field'}`
+            : `Type into ${s.target?.testid || s.target?.placeholder || s.target?.name || 'field'}`)
     }))
   }));
 }
@@ -83,37 +85,63 @@ async function saveWorkflows() {
 }
 
 // ── Messaging helpers ───────────────────────────────────────────────────────
-// Side panel talks DIRECTLY to the content script via chrome.tabs.sendMessage.
-// This does NOT require the `tabs` permission — only host_permissions for the URL.
-// The background relay (runtime.sendMessage) is only used for content→panel direction.
+// Side panel → content via chrome.tabs.sendMessage (works on any site).
+// Content → panel via chrome.runtime.sendMessage (relayed by background).
 
-async function getCrmTabId() {
-  // Primary: tab ID registered by content script on load
-  const { crmTabId } = await chrome.storage.local.get('crmTabId');
+async function getActiveTabId() {
+  // Try the tab that most recently sent us a CONTENT_READY (most reliable)
+  const { crmTabId, activeTabId } = await chrome.storage.local.get(['crmTabId', 'activeTabId']);
   if (crmTabId) return crmTabId;
-
-  // Fallback: active tab in current window (side panel shares the browser window)
+  if (activeTabId) return activeTabId;
+  // Final fallback: active tab in current window
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
   return active?.id ?? null;
 }
 
-async function sendToContent(msg) {
-  const tabId = await getCrmTabId();
-  if (!tabId) {
-    throw new Error('CRM tab not found. Open http://localhost:5173 in this window first.');
-  }
+async function injectContentScript(tabId) {
+  // Ask background to inject content/content.js into the tab
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, msg, (resp) => {
-      if (chrome.runtime.lastError) {
-        // Tab ID may be stale – clear it so next call uses fallback
-        chrome.storage.local.remove('crmTabId').catch(() => {});
-        reject(new Error(chrome.runtime.lastError.message));
+    chrome.runtime.sendMessage({ type: 'INJECT_CONTENT', tabId }, (resp) => {
+      if (chrome.runtime.lastError || resp?.error) {
+        reject(new Error(resp?.error || chrome.runtime.lastError?.message));
       } else {
-        resolve(resp);
+        resolve();
       }
     });
   });
 }
+
+async function sendToContent(msg) {
+  let tabId = await getActiveTabId();
+  if (!tabId) throw new Error('No active tab found. Click on the tab you want to automate first.');
+
+  // First attempt
+  const attempt = (id) => new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(id, msg, (resp) => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(resp);
+    });
+  });
+
+  try {
+    return await attempt(tabId);
+  } catch (e) {
+    // Content script not present → inject it, then retry once
+    if (e.message.includes('Receiving end does not exist') ||
+        e.message.includes('Could not establish connection')) {
+      await injectContentScript(tabId);
+      // Small wait for content script to initialize its listeners
+      await new Promise(r => setTimeout(r, 300));
+      // Re-query the tab ID in case activeTabId was stale
+      tabId = await getActiveTabId();
+      return await attempt(tabId);
+    }
+    // Any other error (e.g. chrome:// page)
+    chrome.storage.local.remove('crmTabId').catch(() => {});
+    throw e;
+  }
+}
+
 
 async function sendConfirmToContent(msg) {
   try { await sendToContent(msg); } catch { /* replayer handles timeout */ }
@@ -199,7 +227,7 @@ btnDiscardWorkflow.addEventListener('click', () => {
 });
 
 // ── Workflows list ──────────────────────────────────────────────────────────
-const ACTION_ICON = { select: '▼', type: '✎', click: '↵' };
+const ACTION_ICON = { select: '▼', type: '✎', click: '↵', press_enter: '⏎', key: '⌨' };
 
 function renderWorkflowsList() {
   if (savedWorkflows.length === 0) {
