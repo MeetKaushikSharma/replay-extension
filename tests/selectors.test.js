@@ -44,7 +44,7 @@ function areTagsCompatible(tagA, tagB) {
   tagA = tagA.toLowerCase();
   tagB = tagB.toLowerCase();
   if (tagA === tagB) return true;
-  const clickables = new Set(['a', 'button', 'span', 'div', 'label', 'i', 'p', 'li', 'summary']);
+  const clickables = new Set(['a', 'button', 'span', 'div', 'label', 'i', 'p', 'li', 'summary', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'b', 'strong', 'em', 'small', 'img', 'svg']);
   if (clickables.has(tagA) && clickables.has(tagB)) return true;
   const textInputs = new Set(['input', 'textarea']);
   if (textInputs.has(tagA) && textInputs.has(tagB)) return true;
@@ -127,15 +127,19 @@ function resolveTarget(target, document) {
     // 9. Visible text content
     () => {
       if (!target.text) return [];
-      const targetNorm = normalizeText(target.text);
+      // Strip trailing ellipsis: buildTarget truncates at 80 chars, which may cut long link titles.
+      const rawNorm = normalizeText(target.text);
+      const isTruncated = target.text.trimEnd().endsWith('...');
+      const targetNorm = isTruncated ? rawNorm.replace(/\.{2,}$/, '').trim() : rawNorm;
       if (!targetNorm) return [];
       const tagSel = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="tab"], [role="menuitem"], [role="option"], label, h1, h2, h3, h4, span, div, p, li, summary';
       const allTextEls = Array.from(document.querySelectorAll(tagSel)).filter(el => {
         const textContent = el.textContent || '';
         const norm = normalizeText(textContent);
         if (!norm) return false;
-        if (norm === targetNorm) return true;
-        if (norm.length < 140 && norm.includes(targetNorm)) return true;
+        if (norm === rawNorm) return true;
+        if (isTruncated && norm.startsWith(targetNorm)) return true;
+        if (!isTruncated && norm.length < 140 && norm.includes(targetNorm)) return true;
         return false;
       });
       return allTextEls.sort((a, b) => {
@@ -148,19 +152,58 @@ function resolveTarget(target, document) {
         const bInteractive = ['button', 'a', 'input', 'label'].includes(b.tagName.toLowerCase()) || b.hasAttribute('role');
         if (aInteractive !== bInteractive) return bInteractive ? 1 : -1;
 
-        const aExact = normalizeText(a.textContent) === targetNorm ? 1 : 0;
-        const bExact = normalizeText(b.textContent) === targetNorm ? 1 : 0;
+        const aExact = normalizeText(a.textContent) === rawNorm ? 1 : 0;
+        const bExact = normalizeText(b.textContent) === rawNorm ? 1 : 0;
         if (aExact !== bExact) return bExact - aExact;
 
         return a.textContent.length - b.textContent.length;
       });
     },
-    // 10. href
+    // 10. href (with Google redirect URL q=/url= param extraction, www stripping, and domain-level fallback)
     () => {
       if (!target.href) return [];
       let els = Array.from(document.querySelectorAll(`a[href="${target.href}"]`));
       if (els.length === 0 && target.href.length > 5) {
         els = Array.from(document.querySelectorAll(`a[href*="${target.href}"]`));
+      }
+      // Domain/host fallback: match any <a> whose href contains the same hostname
+      if (els.length === 0) {
+        try {
+          let hrefToResolve = target.href;
+          // Google Search wraps destination URLs in /url?q=<encoded-url>&... or /url?url=...
+          const googleRedirectMatch = hrefToResolve.match(/[?&](?:q|url)=(https?[^&]+)/);
+          if (googleRedirectMatch) {
+            try { hrefToResolve = decodeURIComponent(googleRedirectMatch[1]); } catch (_) {}
+          }
+          const url = new URL(hrefToResolve.startsWith('http') ? hrefToResolve : 'https://' + hrefToResolve);
+          const hostname = url.hostname;
+          if (hostname && hostname.length > 4) {
+            const cleanHost = hostname.replace(/^www\./, '');
+            const hostEls = Array.from(document.querySelectorAll(`a[href*="${cleanHost}"]`));
+            if (hostEls.length > 0) {
+              if (target.text) {
+                const words = normalizeText(target.text).split(/\s+/).filter(w => w.length > 2);
+                if (words.length > 0) {
+                  const scored = hostEls.map(el => {
+                    const elText = normalizeText(el.textContent);
+                    let score = 0;
+                    for (const w of words) {
+                      if (elText.includes(w)) score++;
+                    }
+                    if (el.querySelector('h1, h2, h3, h4')) score += 2;
+                    return { el, score };
+                  }).sort((a, b) => b.score - a.score);
+                  if (scored[0].score > 0) {
+                    els = [scored[0].el];
+                  }
+                }
+              }
+              if (els.length === 0) {
+                els = [hostEls[0]];
+              }
+            }
+          }
+        } catch (_) {}
       }
       return els;
     },
@@ -227,13 +270,25 @@ function resolveTarget(target, document) {
       const nonParents = pool.filter(a => !pool.some(b => b !== a && a.contains(b)));
       if (nonParents.length === 1) return { el: nonParents[0], count: 1 };
     } else if (pool.length === 1) {
-      return { el: pool[0], count: 1 };
+      let singleEl = pool[0];
+      if (target.tag === 'a' && singleEl.tagName.toLowerCase() !== 'a' && singleEl.closest('a')) {
+        singleEl = singleEl.closest('a');
+      } else if (target.tag === 'button' && singleEl.tagName.toLowerCase() !== 'button' && singleEl.closest('button')) {
+        singleEl = singleEl.closest('button');
+      }
+      return { el: singleEl, count: 1 };
     }
 
     return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
   }
 
-  const el = visible[0];
+  let el = visible[0];
+  if (target.tag === 'a' && el.tagName.toLowerCase() !== 'a' && el.closest('a')) {
+    el = el.closest('a');
+  } else if (target.tag === 'button' && el.tagName.toLowerCase() !== 'button' && el.closest('button')) {
+    el = el.closest('button');
+  }
+
   if (target.tag && !areTagsCompatible(target.tag, el.tagName)) {
     return { el: null, count: 1, reason: 'target changed (tag drifted)' };
   }
@@ -1051,6 +1106,114 @@ describe('Custom Checkboxes, Radios, Sliders & Modal Scroll Filtering', () => {
 
     assert.equal(frameworkToggled, true, 'framework listener on wrapper should be triggered');
     assert.equal(input.checked, true, 'input should be toggled to true');
+  });
+});
+
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// Suite: Cross-page Link Resolution (Google Redirect, Truncated Text, Domain Fallback)
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Cross-page Link Resolution (Google Redirect, Truncated Text, Domain Fallback)', () => {
+
+  test('href domain fallback resolves link by hostname when URL path changed', () => {
+    // Amazon product page recorded at one URL but replayed after URL changed
+    const doc = makeDOM(`
+      <a id="target-link" href="https://www.amazon.in/s?k=powerbank&ref=new">Power Banks on Amazon</a>
+      <a href="https://www.flipkart.com/search?q=powerbank">Flipkart</a>
+    `);
+    const target = { tag: 'a', href: 'https://www.amazon.in/s?k=powerbank&ref=old' };
+    const result = resolveTarget(target, doc);
+    assert.ok(result.el, 'should resolve link by hostname fallback when path changed');
+    assert.equal(result.el.id, 'target-link');
+  });
+
+  test('Google redirect href: extracts destination hostname from /url?q= param', () => {
+    // Google Search results wrap destination URLs in /url?q=<encoded-url>&sa=...
+    const doc = makeDOM(`
+      <a id="amazon-result" href="/url?q=https%3A%2F%2Fwww.amazon.in%2Fs%3Fk%3Dpowerbank&sa=U&ved=abc">
+        Amazon Great Festival Sale
+      </a>
+      <a href="/url?q=https%3A%2F%2Fwww.flipkart.com%2Fsearch&sa=U&ved=xyz">
+        Flipkart Big Sale
+      </a>
+    `);
+    const target = {
+      tag: 'a',
+      href: '/url?q=https%3A%2F%2Fwww.amazon.in%2Fs%3Fk%3Dpowerbank&sa=U&ved=DIFFERENT_PARAMS',
+    };
+    const result = resolveTarget(target, doc);
+    assert.ok(result.el, 'should resolve Google redirect link by q= param hostname extraction');
+    assert.equal(result.el.id, 'amazon-result');
+  });
+
+  test('truncated text prefix match: resolves link when recorded text ends with ...', () => {
+    // buildTarget truncates at 80 chars; long link titles get truncated with "..." suffix
+    const doc = makeDOM(`
+      <a id="amazon-link" href="https://www.amazon.in/sale">
+        Amazon Great Festival Sale | Live Now | Shop Deals on Electronics Fashion and More
+      </a>
+      <a id="other-link" href="https://www.flipkart.com/">
+        Flipkart Big Billion Days Sale
+      </a>
+    `);
+    const target = { tag: 'a', text: 'Amazon Great Festival Sale | Live Now | Shop Deals on Electr...' };
+    const result = resolveTarget(target, doc);
+    assert.ok(result.el, 'should resolve link by prefix match when text is truncated with ...');
+    assert.equal(result.el.id, 'amazon-link');
+  });
+
+  test('truncated text does NOT prefix-match unrelated links', () => {
+    const doc = makeDOM(`
+      <a id="correct" href="https://example.com/a">Amazon Great Festival Sale | Live Now Details</a>
+      <a id="wrong" href="https://example.com/b">Amazon Great Wall Of China History</a>
+    `);
+    const target = { tag: 'a', text: 'Amazon Great Festival Sale | Live Now...' };
+    const result = resolveTarget(target, doc);
+    assert.ok(result.el, 'should find matching link');
+    assert.equal(result.el.id, 'correct', 'prefix match must not select unrelated link');
+  });
+
+  test('non-truncated short text still uses contains match for buttons and labels', () => {
+    const doc = makeDOM(`
+      <button id="btn">  Get It by Tomorrow  </button>
+    `);
+    const target = { tag: 'button', text: 'Get It by Tomorrow' };
+    const result = resolveTarget(target, doc);
+    assert.ok(result.el, 'should resolve button with trimmed text via contains match');
+    assert.equal(result.el.id, 'btn');
+  });
+
+  test('child heading in link promotes to anchor element when target.tag is "a"', () => {
+    // Search engines (Google) format results as <a id="main-link"><h3>Result Title</h3></a>
+    const doc = makeDOM(`
+      <a id="main-link" href="https://www.amazon.in">
+        <h3 id="heading-inside">Amazon Great Festival Sale</h3>
+      </a>
+    `);
+    const target = { tag: 'a', text: 'Amazon Great Festival Sale' };
+    const result = resolveTarget(target, doc);
+    assert.ok(result.el, 'should resolve element');
+    assert.equal(result.el.tagName.toLowerCase(), 'a', 'should promote matched heading to parent anchor element');
+    assert.equal(result.el.id, 'main-link');
+  });
+
+  test('domain fallback disambiguates multiple links using target.text keyword scoring', () => {
+    // When multiple links from the same domain exist, keyword overlap picks the primary result
+    const doc = makeDOM(`
+      <a id="sublink" href="https://www.amazon.in/fashion">Amazon Fashion Deals</a>
+      <a id="main-result" href="https://www.amazon.in/deals"><h3>Amazon Great Festival Sale Best Offers</h3></a>
+      <a id="other" href="https://www.amazon.in/help">Customer Service</a>
+    `);
+    const target = {
+      tag: 'a',
+      href: 'https://www.amazon.in/old-expired-url',
+      text: 'Amazon Great Festival Sale'
+    };
+    const result = resolveTarget(target, doc);
+    assert.ok(result.el, 'should resolve to best matching link by keywords');
+    assert.equal(result.el.id, 'main-result');
   });
 });
 

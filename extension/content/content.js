@@ -63,7 +63,7 @@ function areTagsCompatible(tagA, tagB) {
   tagA = tagA.toLowerCase();
   tagB = tagB.toLowerCase();
   if (tagA === tagB) return true;
-  const clickables = new Set(['a', 'button', 'span', 'div', 'label', 'i', 'p', 'li', 'summary']);
+  const clickables = new Set(['a', 'button', 'span', 'div', 'label', 'i', 'p', 'li', 'summary', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'b', 'strong', 'em', 'small', 'img', 'svg']);
   if (clickables.has(tagA) && clickables.has(tagB)) return true;
   const textInputs = new Set(['input', 'textarea']);
   if (textInputs.has(tagA) && textInputs.has(tagB)) return true;
@@ -189,16 +189,24 @@ function resolveTarget(target) {
     // 9. Visible text content (for buttons, links, cards, filters)
     () => {
       if (!target.text) return [];
-      const targetNorm = normalizeText(target.text);
+      // Strip trailing ellipsis: buildTarget truncates at 80 chars, which may cut long link titles.
+      // When replaying, the actual element may have longer text (e.g. "Amazon Great Festival Sale | Live Now")
+      // so we prefix-match when the recorded text ends with "..." (i.e. was truncated during recording).
+      const rawNorm = normalizeText(target.text);
+      const isTruncated = target.text.trimEnd().endsWith('...');
+      const targetNorm = isTruncated ? rawNorm.replace(/\.{2,}$/, '').trim() : rawNorm;
       if (!targetNorm) return [];
       const tagSel = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="tab"], [role="menuitem"], [role="option"], label, h1, h2, h3, h4, h5, h6, span, div, p, li, summary';
       const allTextEls = deepQuerySelectorAll(tagSel).filter(el => {
         const textContent = el.textContent || '';
         const norm = normalizeText(textContent);
         if (!norm) return false;
-        // Exact match or contains substring within reasonable length
-        if (norm === targetNorm) return true;
-        if (norm.length < 140 && norm.includes(targetNorm)) return true;
+        // Exact match always wins
+        if (norm === rawNorm) return true;
+        // If recorded text was truncated, match as prefix (e.g. "amazon great festival..." -> "amazon great festival sale | live now")
+        if (isTruncated && norm.startsWith(targetNorm)) return true;
+        // Contains match for short recorded labels (e.g. filter checkboxes, short buttons)
+        if (!isTruncated && norm.length < 140 && norm.includes(targetNorm)) return true;
         return false;
       });
       // Prioritize tag match, interactive controls, then exact text
@@ -212,8 +220,8 @@ function resolveTarget(target) {
         const bInteractive = ['button', 'a', 'input', 'label'].includes(b.tagName.toLowerCase()) || b.hasAttribute('role');
         if (aInteractive !== bInteractive) return bInteractive ? 1 : -1;
 
-        const aExact = normalizeText(a.textContent) === targetNorm ? 1 : 0;
-        const bExact = normalizeText(b.textContent) === targetNorm ? 1 : 0;
+        const aExact = normalizeText(a.textContent) === rawNorm ? 1 : 0;
+        const bExact = normalizeText(b.textContent) === rawNorm ? 1 : 0;
         if (aExact !== bExact) return bExact - aExact;
 
         return a.textContent.length - b.textContent.length;
@@ -227,6 +235,47 @@ function resolveTarget(target) {
       if (els.length === 0 && target.href.length > 5) {
         sel = `a[href*="${CSS.escape(target.href)}"]`;
         els = deepQuerySelectorAll(sel);
+      }
+      // Domain/host fallback: for Google Search results or affiliate redirect links,
+      // the displayed title is volatile but the destination domain is stable.
+      // Match any <a> whose href contains the same hostname (e.g. amazon.in).
+      if (els.length === 0) {
+        try {
+          let hrefToResolve = target.href;
+          // Google Search wraps destination URLs in /url?q=<encoded-url>&... or /url?url=...
+          const googleRedirectMatch = hrefToResolve.match(/[?&](?:q|url)=(https?[^&]+)/);
+          if (googleRedirectMatch) {
+            try { hrefToResolve = decodeURIComponent(googleRedirectMatch[1]); } catch (_) {}
+          }
+          const url = new URL(hrefToResolve.startsWith('http') ? hrefToResolve : 'https://' + hrefToResolve);
+          const hostname = url.hostname; // e.g. "www.amazon.in"
+          if (hostname && hostname.length > 4) {
+            const cleanHost = hostname.replace(/^www\./, '');
+            const hostEls = deepQuerySelectorAll(`a[href*="${CSS.escape(cleanHost)}"]`);
+            if (hostEls.length > 0) {
+              if (target.text) {
+                const words = normalizeText(target.text).split(/\s+/).filter(w => w.length > 2);
+                if (words.length > 0) {
+                  const scored = hostEls.map(el => {
+                    const elText = normalizeText(el.textContent);
+                    let score = 0;
+                    for (const w of words) {
+                      if (elText.includes(w)) score++;
+                    }
+                    if (el.querySelector('h1, h2, h3, h4')) score += 2;
+                    return { el, score };
+                  }).sort((a, b) => b.score - a.score);
+                  if (scored[0].score > 0) {
+                    els = [scored[0].el];
+                  }
+                }
+              }
+              if (els.length === 0) {
+                els = [hostEls[0]];
+              }
+            }
+          }
+        } catch (_) {}
       }
       return els;
     },
@@ -295,13 +344,25 @@ function resolveTarget(target) {
       const nonParents = pool.filter(a => !pool.some(b => b !== a && a.contains(b)));
       if (nonParents.length === 1) return { el: nonParents[0], count: 1 };
     } else if (pool.length === 1) {
-      return { el: pool[0], count: 1 };
+      let singleEl = pool[0];
+      if (target.tag === 'a' && singleEl.tagName.toLowerCase() !== 'a' && singleEl.closest('a')) {
+        singleEl = singleEl.closest('a');
+      } else if (target.tag === 'button' && singleEl.tagName.toLowerCase() !== 'button' && singleEl.closest('button')) {
+        singleEl = singleEl.closest('button');
+      }
+      return { el: singleEl, count: 1 };
     }
 
     return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
   }
 
-  const el = visible[0];
+  let el = visible[0];
+  if (target.tag === 'a' && el.tagName.toLowerCase() !== 'a' && el.closest('a')) {
+    el = el.closest('a');
+  } else if (target.tag === 'button' && el.tagName.toLowerCase() !== 'button' && el.closest('button')) {
+    el = el.closest('button');
+  }
+
   if (target.tag && !areTagsCompatible(target.tag, el.tagName)) {
     return { el: null, count: 1, reason: 'target changed (tag drifted)' };
   }
@@ -370,7 +431,10 @@ function pollForTarget(target, { interval = 120, timeout = 9000, autoScroll = tr
         return;
       }
 
-      // Auto-scroll down if element is missing to trigger lazy-loaded elements on modern SPAs
+      // Auto-scroll down if element is missing to trigger lazy-loaded elements on modern SPAs.
+      // EXCEPTION: For top-level link/button targets (e.g. Google Search results, nav links),
+      // scrolling the background page is counterproductive — the link is either there or it isn't.
+      // Scrolling just causes jank and mis-triggers. Only scroll for filter/sidebar targets.
       if (autoScroll && Date.now() - lastScroll > 1200) {
         lastScroll = Date.now();
         const activeModals = findScrollableFilterContainers();
@@ -380,12 +444,17 @@ function pollForTarget(target, { interval = 120, timeout = 9000, autoScroll = tr
             try { modal.scrollBy({ top: 350, behavior: 'smooth' }); } catch (_) {}
           }
         } else {
-          // No modal active: scroll background page and standard filter sidebars
-          try { window.scrollBy({ top: 400, behavior: 'smooth' }); } catch (_) {}
-          try {
-            const sidebars = document.querySelectorAll('#s-refinements, #filters, aside, [role="region"], nav, .sidebar');
-            sidebars.forEach(sb => sb.scrollBy({ top: 300, behavior: 'smooth' }));
-          } catch (_) {}
+          // No modal active: only scroll page if target is NOT a plain link/role=link
+          // (Links on search results / SPA pages are rendered immediately; scrolling just adds noise)
+          const isTopLevelLink = (target.tag === 'a' || target.role === 'link') &&
+            !target.id && !target.testid && !target.ariaLabel;
+          if (!isTopLevelLink) {
+            try { window.scrollBy({ top: 400, behavior: 'smooth' }); } catch (_) {}
+            try {
+              const sidebars = document.querySelectorAll('#s-refinements, #filters, aside, [role="region"], nav, .sidebar');
+              sidebars.forEach(sb => sb.scrollBy({ top: 300, behavior: 'smooth' }));
+            } catch (_) {}
+          }
         }
       }
 
@@ -919,19 +988,28 @@ async function startReplay(workflow, resumeRunId) {
     || location.hostname;
   notifyPanel({ type: 'REPLAY_STARTED', runId, targetName, workflowId: workflow.id });
 
-  // Preflight: For CRM form, check all non-completed steps. For generic dynamic web pages (Amazon, YouTube),
-  // check immediate next step to verify page readiness, then allow sequential runtime polling for dynamic steps.
+  // Preflight: For CRM form, check all non-completed steps. For generic dynamic web pages,
+  // only preflight if this is a FRESH replay (not a cross-navigation resume).
+  // On resume, prior steps already executed correctly — skipping preflight avoids:
+  //   (a) Trying to find post-navigation elements that don't exist yet on this page
+  //   (b) pollForTarget's auto-scroll hammering the background page for 9 seconds
   const isCrm = Boolean(localStorage.getItem('crm.customers')) && Boolean(location.hash.match(/#\/customers\/([^/?]+)/));
   const nonCompleted = workflow.steps.filter(s => !completedStepIds.has(s.id));
-  const stepsToPreflight = isCrm ? nonCompleted : nonCompleted.slice(0, 1);
-  const pre = await preflight(stepsToPreflight);
-  if (!pre.ok) {
-    sendStepStatus(runId, pre.failedStep.id, 'failed', pre.reason);
-    notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: `Preflight: step "${pre.failedStep.label}" – ${pre.reason}` });
-    _activeRun = null;
-    await chrome.storage.local.remove('replay_active_run').catch(() => {});
-    return;
+  const isResume = Boolean(resumeRunId) && completedStepIds.size > 0;
+
+  if (!isResume) {
+    // Fresh start: only preflight the immediate first step (page readiness check)
+    const stepsToPreflight = isCrm ? nonCompleted : nonCompleted.slice(0, 1);
+    const pre = await preflight(stepsToPreflight);
+    if (!pre.ok) {
+      sendStepStatus(runId, pre.failedStep.id, 'failed', pre.reason);
+      notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: `Preflight: step "${pre.failedStep.label}" – ${pre.reason}` });
+      _activeRun = null;
+      await chrome.storage.local.remove('replay_active_run').catch(() => {});
+      return;
+    }
   }
+  // If isResume: skip preflight — the step loop's pollForTarget handles element waiting
 
   for (const step of workflow.steps) {
     if (_activeRun.cancelled) break;
