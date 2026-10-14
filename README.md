@@ -4,6 +4,10 @@ A Chrome MV3 extension that lets an operations user record a workflow on one CRM
 
 > **Requires Chrome 114+** (for `sidePanel` API)
 
+## 🎥 Demo Video
+
+[▶️ Watch the Demo Video](https://drive.google.com/file/d/1mLZRHay3eJc7rh6QyTb1CvzmRHAuowe5/view)
+
 ---
 
 ## The Problem
