@@ -17,79 +17,199 @@ function makeDOM(html) {
 function isVisibleAndEnabled(el) {
   if (!el) return false;
   if (el.disabled) return false;
-  // jsdom doesn't compute layouts, so we skip rect check
+  if (el.closest('[style*="display: none"], [style*="visibility: hidden"], [hidden]')) {
+    return false;
+  }
   return true;
 }
 
+function normalizeText(str) {
+  return (str || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function areTagsCompatible(tagA, tagB) {
+  if (!tagA || !tagB) return true;
+  tagA = tagA.toLowerCase();
+  tagB = tagB.toLowerCase();
+  if (tagA === tagB) return true;
+  const clickables = new Set(['a', 'button', 'span', 'div', 'label', 'i', 'p', 'li', 'summary']);
+  if (clickables.has(tagA) && clickables.has(tagB)) return true;
+  const textInputs = new Set(['input', 'textarea']);
+  if (textInputs.has(tagA) && textInputs.has(tagB)) return true;
+  return false;
+}
+
+function isRoleCompatible(actualRole, targetRole) {
+  if (!actualRole || !targetRole) return true;
+  if (actualRole === targetRole) return true;
+  const isTextInput = (r) => ['textbox', 'combobox', 'searchbox'].includes(r);
+  const isClickable = (r) => ['button', 'link', 'tab', 'menuitem', 'option', 'checkbox', 'radio'].includes(r);
+  if (isTextInput(actualRole) && isTextInput(targetRole)) return true;
+  if (isClickable(actualRole) && isClickable(targetRole)) return true;
+  return false;
+}
+
 function resolveTarget(target, document) {
-  const candidates = [];
-  if (target.testid) {
-    const els = Array.from(document.querySelectorAll(`[data-testid="${target.testid}"]`));
-    if (els.length) candidates.push(...els);
-  }
-  if (candidates.length === 0 && target.id) {
-    const el = document.getElementById(target.id);
-    if (el) candidates.push(el);
-  }
-  if (candidates.length === 0 && target.name) {
-    const els = Array.from(document.querySelectorAll(`${target.tag || '*'}[name="${target.name}"]`));
-    if (els.length) candidates.push(...els);
-  }
-  if (candidates.length === 0 && target.ariaLabel) {
-    const els = Array.from(document.querySelectorAll(`[aria-label="${target.ariaLabel}"]`));
-    if (els.length) candidates.push(...els);
-  }
-  if (candidates.length === 0 && target.placeholder) {
-    const els = Array.from(document.querySelectorAll(`[placeholder="${target.placeholder}"]`));
-    if (els.length) candidates.push(...els);
-  }
-  if (candidates.length === 0 && target.title) {
-    const els = Array.from(document.querySelectorAll(`[title="${target.title}"]`));
-    if (els.length) candidates.push(...els);
-  }
-  if (candidates.length === 0 && target.href) {
-    let els = Array.from(document.querySelectorAll(`a[href="${target.href}"]`));
-    if (els.length === 0 && target.href.length > 5) {
-      els = Array.from(document.querySelectorAll(`a[href*="${target.href}"]`));
+  const strategies = [
+    // 1. data-testid
+    () => {
+      if (!target.testid) return [];
+      return Array.from(document.querySelectorAll(`[data-testid="${target.testid}"], [data-test="${target.testid}"], [data-cy="${target.testid}"]`));
+    },
+    // 2. id
+    () => {
+      if (!target.id) return [];
+      const el = document.getElementById(target.id);
+      return el ? [el] : Array.from(document.querySelectorAll(`#${target.id}`));
+    },
+    // 3. name
+    () => {
+      if (!target.name) return [];
+      return Array.from(document.querySelectorAll(`${target.tag || '*'}[name="${target.name}"]`));
+    },
+    // 4. ariaLabel
+    () => {
+      if (!target.ariaLabel) return [];
+      return Array.from(document.querySelectorAll(`[aria-label="${target.ariaLabel}"]`));
+    },
+    // 5. placeholder
+    () => {
+      if (!target.placeholder) return [];
+      return Array.from(document.querySelectorAll(`[placeholder="${target.placeholder}"]`));
+    },
+    // 6. title
+    () => {
+      if (!target.title) return [];
+      return Array.from(document.querySelectorAll(`[title="${target.title}"]`));
+    },
+    // 7. labelText
+    () => {
+      if (!target.labelText) return [];
+      const normTarget = normalizeText(target.labelText);
+      const res = [];
+      Array.from(document.querySelectorAll('label')).forEach(lbl => {
+        if (normalizeText(lbl.textContent) === normTarget || normalizeText(lbl.textContent).includes(normTarget)) {
+          const ctrl = lbl.control || (lbl.htmlFor && document.getElementById(lbl.htmlFor)) || lbl.querySelector('input, select, textarea');
+          if (ctrl) res.push(ctrl);
+        }
+      });
+      return res;
+    },
+    // 8. Visible text content
+    () => {
+      if (!target.text) return [];
+      const targetNorm = normalizeText(target.text);
+      if (!targetNorm) return [];
+      const tagSel = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="tab"], [role="menuitem"], [role="option"], label, h1, h2, h3, h4, span, div, p, li, summary';
+      const allTextEls = Array.from(document.querySelectorAll(tagSel)).filter(el => {
+        const textContent = el.textContent || '';
+        const norm = normalizeText(textContent);
+        if (!norm) return false;
+        if (norm === targetNorm) return true;
+        if (norm.length < 140 && norm.includes(targetNorm)) return true;
+        return false;
+      });
+      return allTextEls.sort((a, b) => {
+        if (target.tag) {
+          const aTagMatch = a.tagName.toLowerCase() === target.tag.toLowerCase() ? 1 : 0;
+          const bTagMatch = b.tagName.toLowerCase() === target.tag.toLowerCase() ? 1 : 0;
+          if (aTagMatch !== bTagMatch) return bTagMatch - aTagMatch;
+        }
+        const aInteractive = ['button', 'a', 'input', 'label'].includes(a.tagName.toLowerCase()) || a.hasAttribute('role');
+        const bInteractive = ['button', 'a', 'input', 'label'].includes(b.tagName.toLowerCase()) || b.hasAttribute('role');
+        if (aInteractive !== bInteractive) return bInteractive ? 1 : -1;
+
+        const aExact = normalizeText(a.textContent) === targetNorm ? 1 : 0;
+        const bExact = normalizeText(b.textContent) === targetNorm ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+
+        return a.textContent.length - b.textContent.length;
+      });
+    },
+    // 9. href
+    () => {
+      if (!target.href) return [];
+      let els = Array.from(document.querySelectorAll(`a[href="${target.href}"]`));
+      if (els.length === 0 && target.href.length > 5) {
+        els = Array.from(document.querySelectorAll(`a[href*="${target.href}"]`));
+      }
+      return els;
+    },
+    // 10. selector
+    () => {
+      if (!target.selector) return [];
+      try {
+        return Array.from(document.querySelectorAll(target.selector));
+      } catch (_) {
+        return [];
+      }
     }
-    if (els.length) candidates.push(...els);
-  }
-  if (candidates.length === 0 && target.text) {
-    const tagSel = target.tag || 'button, a, [role="button"], [role="link"], h1, h2, h3, h4, span, div';
-    const els = Array.from(document.querySelectorAll(tagSel)).filter(el => {
-      const t = el.textContent?.trim();
-      return t === target.text || (t && t.length < 120 && t.includes(target.text));
-    });
-    if (els.length) candidates.push(...els);
-  }
-  if (candidates.length === 0 && target.selector) {
+  ];
+
+  let visible = [];
+  for (const strategy of strategies) {
+    let candidates = [];
     try {
-      const els = Array.from(document.querySelectorAll(target.selector));
-      if (els.length) candidates.push(...els);
-    } catch (_) {}
+      candidates = strategy();
+    } catch (_) {
+      continue;
+    }
+    if (candidates.length > 0) {
+      const vis = candidates.filter(isVisibleAndEnabled);
+      if (vis.length > 0) {
+        visible = vis;
+        break;
+      }
+    }
   }
-  const visible = candidates.filter(isVisibleAndEnabled);
+
   if (visible.length === 0) return { el: null, count: 0, reason: 'missing' };
+
   if (visible.length > 1) {
-    const exact = visible.filter(el => {
+    // 1. If target.tag is specified, narrow down to elements matching tag
+    let filtered = visible;
+    if (target.tag) {
+      const tagMatches = filtered.filter(el => el.tagName.toLowerCase() === target.tag.toLowerCase());
+      if (tagMatches.length > 0) filtered = tagMatches;
+    }
+
+    // 2. Exact matches
+    const exact = filtered.filter(el => {
       if (target.id && el.id === target.id) return true;
       if (target.href && (el.getAttribute('href') === target.href || el.getAttribute('href')?.endsWith(target.href))) return true;
-      if (target.text && el.textContent?.trim() === target.text) return true;
+      if (target.text && normalizeText(el.textContent) === normalizeText(target.text)) return true;
       return false;
     });
-    if (exact.length === 1) return { el: exact[0], count: 1 };
+
+    const pool = exact.length > 0 ? exact : filtered;
+
+    // 3. If candidates are in an ancestor-descendant hierarchy (e.g. <div><a id="filter"><span>Text</span></a></div>),
+    // pick the most specific interactive control or innermost matching element
+    if (pool.length > 1) {
+      const interactive = pool.filter(el =>
+        ['button', 'a', 'input', 'label'].includes(el.tagName.toLowerCase()) || el.hasAttribute('role')
+      );
+      if (interactive.length === 1) return { el: interactive[0], count: 1 };
+      if (interactive.length > 1) {
+        const nonParents = interactive.filter(a => !interactive.some(b => b !== a && a.contains(b)));
+        if (nonParents.length === 1) return { el: nonParents[0], count: 1 };
+      }
+      const nonParents = pool.filter(a => !pool.some(b => b !== a && a.contains(b)));
+      if (nonParents.length === 1) return { el: nonParents[0], count: 1 };
+    } else if (pool.length === 1) {
+      return { el: pool[0], count: 1 };
+    }
+
     return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
   }
 
   const el = visible[0];
-  if (target.tag && el.tagName.toLowerCase() !== target.tag.toLowerCase()) {
+  if (target.tag && !areTagsCompatible(target.tag, el.tagName)) {
     return { el: null, count: 1, reason: 'target changed (tag drifted)' };
   }
   if (target.role) {
     const actualRole = el.getAttribute('role') || (el.tagName.toLowerCase() === 'input' ? 'textbox' : '');
-    const isTextInput = (r) => ['textbox', 'combobox', 'searchbox'].includes(r);
-    const compatible = actualRole === target.role || (isTextInput(actualRole) && isTextInput(target.role));
-    if (!compatible) {
+    if (!isRoleCompatible(actualRole, target.role)) {
       return { el: null, count: 1, reason: 'target changed (role drifted)' };
     }
   }
@@ -101,11 +221,63 @@ function buildTarget(el, recordId, document) {
   const id = el.id || '';
   const ariaLabel = el.getAttribute('aria-label') || '';
   const tag = el.tagName.toLowerCase();
+  let text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  let labelText = '';
+
+  const parentLabel = el.closest('label');
+  if (parentLabel) labelText = (parentLabel.textContent || '').replace(/\s+/g, ' ').trim();
+
+  // Container text fallback
+  if (!text && !labelText) {
+    const container = el.closest('li, label, .s-navigation-item, [role="listitem"], tr');
+    if (container) {
+      const cText = (container.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (cText) {
+        if (tag === 'input') labelText = cText;
+        else text = cText;
+      }
+    }
+  }
+
   if (recordId) {
-    const suspicious = [testid, id, ariaLabel].some(s => s && s.includes(recordId));
+    const suspicious = [testid, id, ariaLabel, labelText].some(s => s && s.includes(recordId));
     if (suspicious) return { error: 'record-specific', testid, id };
   }
-  return { testid, id, ariaLabel, tag };
+  return { testid, id, ariaLabel, tag, text, labelText };
+}
+
+function findClickableElement(target) {
+  if (!target || target === target.ownerDocument.body || target === target.ownerDocument.documentElement) return null;
+
+  // 1. Label wrapping a form control (e.g. checkbox icon inside label)
+  const label = target.closest('label');
+  if (label) {
+    const ctrl = label.control || label.querySelector('input, select, textarea') || (label.htmlFor && target.ownerDocument.getElementById(label.htmlFor));
+    if (ctrl) return ctrl;
+  }
+
+  // 2. Direct interactive controls or links
+  const direct = target.closest(
+    'button, [role="button"], a[href], [role="link"], input, select, textarea, [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], summary'
+  );
+  if (direct) return direct;
+
+  // 3. Label without input: parent link or text label
+  if (label) {
+    const parentActionable = label.closest('a[href], button, [role="button"]');
+    if (parentActionable) return parentActionable;
+    if (label.textContent?.trim()) return label;
+  }
+
+  // 4. Custom clickable walk
+  let cur = target;
+  for (let i = 0; i < 4 && cur && cur !== target.ownerDocument.body; i++) {
+    if (cur.getAttribute('onclick') || (cur.hasAttribute('tabindex') && cur.getAttribute('tabindex') !== '-1')) {
+      return cur;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 function isSensitiveField(el) {
@@ -470,5 +642,140 @@ describe('Universal Web Interactions (Links, Checkboxes, Radios, Title, Href, Au
     const clickable = findClickable(innerImg);
     assert.ok(clickable);
     assert.equal(clickable.id, 'video-card');
+  });
+});
+
+describe('Dynamic E-Commerce & Complex Web Filtering (Visible-first fallback, Amazon badges, container context, preflight)', () => {
+  test('visible-first strategy: hidden href in drawer does not block visible text in sidebar', () => {
+    const doc = makeDOM(`
+      <!-- Hidden mobile drawer -->
+      <div id="mobile-drawer" style="display: none">
+        <a href="/s?k=Power+Bank&amp;filter=tomorrow" id="hidden-drawer-link">Old Filter Link</a>
+      </div>
+      <!-- Visible sidebar filter -->
+      <div id="sidebar-filters">
+        <a href="/s?k=Power+Bank&amp;new_token=123" id="visible-filter-link">
+          <span class="a-size-base">Get It by Tomorrow</span>
+        </a>
+      </div>
+    `);
+
+    // Target recorded with old href AND visible text
+    const target = {
+      tag: 'a',
+      href: '/s?k=Power+Bank&filter=tomorrow',
+      text: 'Get It by Tomorrow'
+    };
+
+    const res = resolveTarget(target, doc);
+    assert.ok(res.el, 'should locate visible filter link');
+    assert.equal(res.el.id, 'visible-filter-link');
+    assert.equal(res.count, 1);
+  });
+
+  test('text normalization matches Amazon filter labels with newlines and count badges', () => {
+    const doc = makeDOM(`
+      <div class="s-refinement">
+        <a id="prime-filter" class="s-navigation-item" href="/s?k=Power+Bank&amp;filter=tomorrow">
+          <span>
+            Get It by Tomorrow
+          </span>
+          <span class="s-count">(2,540)</span>
+        </a>
+      </div>
+    `);
+
+    const target = { tag: 'a', text: 'Get It by Tomorrow' };
+    const res = resolveTarget(target, doc);
+    assert.ok(res.el);
+    assert.equal(res.el.id, 'prime-filter');
+    assert.equal(res.count, 1);
+  });
+
+  test('findClickableElement resolves checkbox inside empty label to input element', () => {
+    const doc = makeDOM(`
+      <a class="s-navigation-item" href="/filter-discount">
+        <div class="a-checkbox">
+          <label>
+            <input type="checkbox" id="discount-70-input" />
+            <i class="a-icon a-icon-checkbox" id="check-icon"></i>
+          </label>
+        </div>
+        <span class="a-size-base">70% Off or more</span>
+      </a>
+    `);
+
+    const icon = doc.getElementById('check-icon');
+    const clickable = findClickableElement(icon);
+    assert.ok(clickable);
+    assert.equal(clickable.id, 'discount-70-input', 'should resolve to the checkbox input, not empty label');
+    assert.equal(clickable.tagName.toLowerCase(), 'input');
+  });
+
+  test('buildTarget extracts labelText from enclosing container when input has no direct label text', () => {
+    const doc = makeDOM(`
+      <li class="s-navigation-item">
+        <input type="checkbox" id="discount-input" />
+        <span class="a-size-base">70% Off or more</span>
+      </li>
+    `);
+
+    const input = doc.getElementById('discount-input');
+    const target = buildTarget(input, null, doc);
+    assert.equal(target.labelText, '70% Off or more', 'should extract text from enclosing container');
+  });
+
+  test('tag cross-compatibility allows clickable span to resolve to button without tag drift error', () => {
+    const doc = makeDOM('<button id="apply-btn">Apply Filters</button>');
+    // Target was recorded when user clicked an inner span: { tag: 'span', text: 'Apply Filters' }
+    const target = { tag: 'span', text: 'Apply Filters' };
+    const res = resolveTarget(target, doc);
+    assert.ok(res.el);
+    assert.equal(res.el.id, 'apply-btn');
+    assert.equal(res.count, 1);
+  });
+
+  test('tag incompatibility rejects input target matching non-input elements', () => {
+    const doc = makeDOM('<div id="price-box">20</div>');
+    const target = { tag: 'input', text: '20' };
+    const res = resolveTarget(target, doc);
+    assert.equal(res.el, null);
+    assert.match(res.reason, /tag drifted/);
+  });
+
+  test('preflight scope: generic sites check immediate next step, CRM checks all steps', () => {
+    function getStepsToPreflight(isCrm, nonCompletedSteps) {
+      return isCrm ? nonCompletedSteps : nonCompletedSteps.slice(0, 1);
+    }
+
+    const elevenSteps = Array.from({ length: 11 }, (_, i) => ({ id: `step_${i}` }));
+
+    const genericSteps = getStepsToPreflight(false, elevenSteps);
+    assert.equal(genericSteps.length, 1, 'generic web should only preflight immediate next step');
+    assert.equal(genericSteps[0].id, 'step_0');
+
+    const crmSteps = getStepsToPreflight(true, elevenSteps);
+    assert.equal(crmSteps.length, 11, 'CRM should preflight all 11 steps for form verification');
+  });
+
+  test('isNewTabPage correctly identifies Chrome new tab URLs and maps to google.com', () => {
+    function isNewTabPage(url) {
+      if (!url) return true;
+      return url.startsWith('chrome://newtab') ||
+             url.startsWith('chrome-search://') ||
+             url === 'about:blank' ||
+             url === 'about:newtab' ||
+             url.startsWith('edge://newtab') ||
+             url === 'chrome://';
+    }
+
+    assert.equal(isNewTabPage('chrome://newtab/'), true);
+    assert.equal(isNewTabPage('chrome-search://local-ntp/local-ntp.html'), true);
+    assert.equal(isNewTabPage('about:blank'), true);
+    assert.equal(isNewTabPage('about:newtab'), true);
+    assert.equal(isNewTabPage('edge://newtab'), true);
+    assert.equal(isNewTabPage('https://www.google.com'), false);
+    assert.equal(isNewTabPage('https://www.amazon.in'), false);
+    assert.equal(isNewTabPage('chrome://settings'), false);
   });
 });

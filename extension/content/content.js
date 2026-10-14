@@ -33,6 +33,32 @@ function implicitRole(el) {
   return '';
 }
 
+function normalizeText(str) {
+  return (str || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function areTagsCompatible(tagA, tagB) {
+  if (!tagA || !tagB) return true;
+  tagA = tagA.toLowerCase();
+  tagB = tagB.toLowerCase();
+  if (tagA === tagB) return true;
+  const clickables = new Set(['a', 'button', 'span', 'div', 'label', 'i', 'p', 'li', 'summary']);
+  if (clickables.has(tagA) && clickables.has(tagB)) return true;
+  const textInputs = new Set(['input', 'textarea']);
+  if (textInputs.has(tagA) && textInputs.has(tagB)) return true;
+  return false;
+}
+
+function isRoleCompatible(actualRole, targetRole) {
+  if (!actualRole || !targetRole) return true;
+  if (actualRole === targetRole) return true;
+  const isTextInput = (r) => ['textbox', 'combobox', 'searchbox'].includes(r);
+  const isClickable = (r) => ['button', 'link', 'tab', 'menuitem', 'option', 'checkbox', 'radio'].includes(r);
+  if (isTextInput(actualRole) && isTextInput(targetRole)) return true;
+  if (isClickable(actualRole) && isClickable(targetRole)) return true;
+  return false;
+}
+
 function getLabelText(el) {
   const labelledBy = el.getAttribute('aria-labelledby');
   if (labelledBy) {
@@ -74,102 +100,182 @@ function deepQuerySelectorAll(selector, root = document) {
 }
 
 function resolveTarget(target) {
-  const candidates = [];
+  // Define prioritized strategies. A strategy is only accepted if it yields VISIBLE, enabled elements.
+  // This prevents invisible/offscreen drawer elements or hidden templates from blocking visible controls.
+  const strategies = [
+    // 1. data-testid / data-test / data-cy
+    () => {
+      if (!target.testid) return [];
+      return deepQuerySelectorAll(`[data-testid="${CSS.escape(target.testid)}"], [data-test="${CSS.escape(target.testid)}"], [data-cy="${CSS.escape(target.testid)}"]`);
+    },
+    // 2. id (stable ID)
+    () => {
+      if (!target.id) return [];
+      const el = document.getElementById(target.id);
+      return el ? [el] : deepQuerySelectorAll(`#${CSS.escape(target.id)}`);
+    },
+    // 3. name attribute (common for search/form inputs)
+    () => {
+      if (!target.name) return [];
+      const sel = `${target.tag || '*'}[name="${CSS.escape(target.name)}"]`;
+      return deepQuerySelectorAll(sel);
+    },
+    // 4. aria-label
+    () => {
+      if (!target.ariaLabel) return [];
+      return deepQuerySelectorAll(`[aria-label="${CSS.escape(target.ariaLabel)}"]`);
+    },
+    // 5. placeholder
+    () => {
+      if (!target.placeholder) return [];
+      return deepQuerySelectorAll(`[placeholder="${CSS.escape(target.placeholder)}"]`);
+    },
+    // 6. title attribute (tooltips, icons, video links)
+    () => {
+      if (!target.title) return [];
+      return deepQuerySelectorAll(`[title="${CSS.escape(target.title)}"]`);
+    },
+    // 7. Accessible label text
+    () => {
+      if (!target.labelText) return [];
+      const normTarget = normalizeText(target.labelText);
+      const res = [];
+      deepQuerySelectorAll('label').forEach(lbl => {
+        if (normalizeText(lbl.textContent) === normTarget || normalizeText(lbl.textContent).includes(normTarget)) {
+          const ctrl = lbl.control || (lbl.htmlFor && document.getElementById(lbl.htmlFor)) || lbl.querySelector('input, select, textarea');
+          if (ctrl) res.push(ctrl);
+        }
+      });
+      return res;
+    },
+    // 8. Visible text content (for buttons, links, cards, filters)
+    () => {
+      if (!target.text) return [];
+      const targetNorm = normalizeText(target.text);
+      if (!targetNorm) return [];
+      const tagSel = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="tab"], [role="menuitem"], [role="option"], label, h1, h2, h3, h4, h5, h6, span, div, p, li, summary';
+      const allTextEls = deepQuerySelectorAll(tagSel).filter(el => {
+        const textContent = el.textContent || '';
+        const norm = normalizeText(textContent);
+        if (!norm) return false;
+        // Exact match or contains substring within reasonable length
+        if (norm === targetNorm) return true;
+        if (norm.length < 140 && norm.includes(targetNorm)) return true;
+        return false;
+      });
+      // Prioritize tag match, interactive controls, then exact text
+      return allTextEls.sort((a, b) => {
+        if (target.tag) {
+          const aTagMatch = a.tagName.toLowerCase() === target.tag.toLowerCase() ? 1 : 0;
+          const bTagMatch = b.tagName.toLowerCase() === target.tag.toLowerCase() ? 1 : 0;
+          if (aTagMatch !== bTagMatch) return bTagMatch - aTagMatch;
+        }
+        const aInteractive = ['button', 'a', 'input', 'label'].includes(a.tagName.toLowerCase()) || a.hasAttribute('role');
+        const bInteractive = ['button', 'a', 'input', 'label'].includes(b.tagName.toLowerCase()) || b.hasAttribute('role');
+        if (aInteractive !== bInteractive) return bInteractive ? 1 : -1;
 
-  // 1. data-testid / data-test / data-cy
-  if (target.testid) {
-    const els = deepQuerySelectorAll(`[data-testid="${CSS.escape(target.testid)}"]`);
-    candidates.push(...els);
-  }
-  // 2. id (stable ID)
-  if (candidates.length === 0 && target.id) {
-    const el = document.getElementById(target.id);
-    if (el) candidates.push(el);
-    else candidates.push(...deepQuerySelectorAll(`#${CSS.escape(target.id)}`));
-  }
-  // 3. name attribute (common for search/form inputs)
-  if (candidates.length === 0 && target.name) {
-    const sel = `${target.tag || '*'}[name="${CSS.escape(target.name)}"]`;
-    candidates.push(...deepQuerySelectorAll(sel));
-  }
-  // 4. aria-label
-  if (candidates.length === 0 && target.ariaLabel) {
-    const sel = `[aria-label="${CSS.escape(target.ariaLabel)}"]`;
-    candidates.push(...deepQuerySelectorAll(sel));
-  }
-  // 5. placeholder
-  if (candidates.length === 0 && target.placeholder) {
-    const sel = `[placeholder="${CSS.escape(target.placeholder)}"]`;
-    candidates.push(...deepQuerySelectorAll(sel));
-  }
-  // 6. title attribute (tooltips, icons, video links)
-  if (candidates.length === 0 && target.title) {
-    const sel = `[title="${CSS.escape(target.title)}"]`;
-    candidates.push(...deepQuerySelectorAll(sel));
-  }
-  // 7. Accessible label text
-  if (candidates.length === 0 && target.labelText) {
-    deepQuerySelectorAll('label').forEach(lbl => {
-      if (lbl.textContent.trim() === target.labelText) {
-        const ctrl = lbl.control || (lbl.htmlFor && document.getElementById(lbl.htmlFor));
-        if (ctrl) candidates.push(ctrl);
+        const aExact = normalizeText(a.textContent) === targetNorm ? 1 : 0;
+        const bExact = normalizeText(b.textContent) === targetNorm ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+
+        return a.textContent.length - b.textContent.length;
+      });
+    },
+    // 9. href (for links, e.g. search results or YouTube video links)
+    () => {
+      if (!target.href) return [];
+      let sel = `a[href="${CSS.escape(target.href)}"]`;
+      let els = deepQuerySelectorAll(sel);
+      if (els.length === 0 && target.href.length > 5) {
+        sel = `a[href*="${CSS.escape(target.href)}"]`;
+        els = deepQuerySelectorAll(sel);
       }
-    });
-  }
-  // 8. href (for links, e.g. search results or YouTube video links)
-  if (candidates.length === 0 && target.href) {
-    let sel = `a[href="${CSS.escape(target.href)}"]`;
-    let els = deepQuerySelectorAll(sel);
-    if (els.length === 0 && target.href.length > 5) {
-      sel = `a[href*="${CSS.escape(target.href)}"]`;
-      els = deepQuerySelectorAll(sel);
+      return els;
+    },
+    // 10. Robust CSS selector fallback
+    () => {
+      if (!target.selector) return [];
+      try {
+        return deepQuerySelectorAll(target.selector);
+      } catch (_) {
+        return [];
+      }
     }
-    candidates.push(...els);
-  }
-  // 9. Visible text content (for buttons, links, cards, or role=button)
-  if (candidates.length === 0 && target.text) {
-    const tagSel = target.tag || 'button, a, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], h1, h2, h3, h4, span, div';
-    const textEls = deepQuerySelectorAll(tagSel).filter(el => {
-      const t = el.textContent?.trim();
-      return t === target.text || (t && t.length < 120 && t.includes(target.text));
-    });
-    candidates.push(...textEls);
-  }
-  // 10. Robust CSS selector fallback
-  if (candidates.length === 0 && target.selector) {
-    candidates.push(...deepQuerySelectorAll(target.selector));
+  ];
+
+  let visible = [];
+  for (const strategy of strategies) {
+    let candidates = [];
+    try {
+      candidates = strategy();
+    } catch (_) {
+      continue;
+    }
+    if (candidates.length > 0) {
+      const vis = candidates.filter(isVisibleAndEnabled);
+      if (vis.length > 0) {
+        visible = vis;
+        break; // Found matching visible candidates with highest-priority strategy
+      }
+    }
   }
 
-  const visible = candidates.filter(isVisibleAndEnabled);
   if (visible.length === 0) return { el: null, count: 0, reason: 'missing' };
+
   if (visible.length > 1) {
-    // Disambiguate if one exact candidate matches
-    const exact = visible.filter(el => {
+    // 1. If target.tag is specified, narrow down to elements matching tag
+    let filtered = visible;
+    if (target.tag) {
+      const tagMatches = filtered.filter(el => el.tagName.toLowerCase() === target.tag.toLowerCase());
+      if (tagMatches.length > 0) filtered = tagMatches;
+    }
+
+    // 2. Exact matches
+    const exact = filtered.filter(el => {
       if (target.id && el.id === target.id) return true;
       if (target.href && (el.getAttribute('href') === target.href || el.getAttribute('href')?.endsWith(target.href))) return true;
-      if (target.text && el.textContent?.trim() === target.text) return true;
+      if (target.text && normalizeText(el.textContent) === normalizeText(target.text)) return true;
       return false;
     });
-    if (exact.length === 1) return { el: exact[0], count: 1 };
+
+    const pool = exact.length > 0 ? exact : filtered;
+
+    // 3. If candidates are in an ancestor-descendant hierarchy (e.g. <div><a id="filter"><span>Text</span></a></div>),
+    // pick the most specific interactive control or innermost matching element
+    if (pool.length > 1) {
+      const interactive = pool.filter(el =>
+        ['button', 'a', 'input', 'label'].includes(el.tagName.toLowerCase()) || el.hasAttribute('role')
+      );
+      if (interactive.length === 1) return { el: interactive[0], count: 1 };
+      if (interactive.length > 1) {
+        // Among multiple interactive elements, if one contains the other, pick the innermost
+        const nonParents = interactive.filter(a => !interactive.some(b => b !== a && a.contains(b)));
+        if (nonParents.length === 1) return { el: nonParents[0], count: 1 };
+      }
+      // If neither or multiple non-interactive, pick innermost element
+      const nonParents = pool.filter(a => !pool.some(b => b !== a && a.contains(b)));
+      if (nonParents.length === 1) return { el: nonParents[0], count: 1 };
+    } else if (pool.length === 1) {
+      return { el: pool[0], count: 1 };
+    }
+
     return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
   }
 
   const el = visible[0];
-  if (target.tag && el.tagName.toLowerCase() !== target.tag.toLowerCase()) {
+  if (target.tag && !areTagsCompatible(target.tag, el.tagName)) {
     return { el: null, count: 1, reason: 'target changed (tag drifted)' };
   }
   if (target.role) {
     const actualRole = el.getAttribute('role') || implicitRole(el);
-    const isTextInput = (r) => ['textbox', 'combobox', 'searchbox'].includes(r);
-    const compatible = actualRole === target.role || (isTextInput(actualRole) && isTextInput(target.role));
-    if (!compatible) {
+    if (!isRoleCompatible(actualRole, target.role)) {
       return { el: null, count: 1, reason: 'target changed (role drifted)' };
     }
   }
   return { el, count: 1 };
 }
 
-function pollForTarget(target, { interval = 120, timeout = 7000, autoScroll = true } = {}) {
+function pollForTarget(target, { interval = 120, timeout = 9000, autoScroll = true } = {}) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeout;
     let lastScroll = 0;
@@ -181,15 +287,20 @@ function pollForTarget(target, { interval = 120, timeout = 7000, autoScroll = tr
         resolve(result);
         return;
       }
-      if (Date.now() >= deadline || result.reason !== 'missing') {
+      if (Date.now() >= deadline || (result.reason && result.reason.startsWith('ambiguous'))) {
         reject(result);
         return;
       }
 
       // Auto-scroll down if element is missing to trigger lazy-loaded elements on modern SPAs
-      if (autoScroll && Date.now() - lastScroll > 1500 && Date.now() + 1500 < deadline) {
+      if (autoScroll && Date.now() - lastScroll > 1200) {
         lastScroll = Date.now();
-        try { window.scrollBy({ top: 350, behavior: 'smooth' }); } catch (_) {}
+        try { window.scrollBy({ top: 400, behavior: 'smooth' }); } catch (_) {}
+        // Also scroll sidebar containers if present
+        try {
+          const sidebars = document.querySelectorAll('#s-refinements, #filters, aside, [role="region"], nav, .sidebar');
+          sidebars.forEach(sb => sb.scrollBy({ top: 300, behavior: 'smooth' }));
+        } catch (_) {}
       }
 
       setTimeout(attempt, interval);
@@ -207,7 +318,7 @@ function buildTarget(el, recordId) {
   const placeholder = el.getAttribute('placeholder') || '';
   const ariaLabel   = el.getAttribute('aria-label') || '';
   const title       = el.getAttribute('title') || '';
-  const labelText   = getLabelText(el);
+  let labelText     = getLabelText(el);
   const tag         = el.tagName.toLowerCase();
   const role        = el.getAttribute('role') || implicitRole(el);
   const type        = el.getAttribute('type') || '';
@@ -219,9 +330,21 @@ function buildTarget(el, recordId) {
   // Text content extraction
   let text = '';
   if (['button', 'a'].includes(tag) || ['button', 'link', 'tab', 'menuitem', 'option'].includes(role)) {
-    text = el.textContent?.trim().slice(0, 60) || '';
+    text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   } else if (!testid && !id && !name && !ariaLabel) {
-    text = el.textContent?.trim().slice(0, 60) || '';
+    text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+
+  // If text and labelText are empty, check parent container (e.g. li, label, .s-navigation-item)
+  if (!text && !labelText) {
+    const container = el.closest('li, label, .s-navigation-item, [role="listitem"], tr, .form-group');
+    if (container) {
+      const cText = (container.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (cText) {
+        if (tag === 'input') labelText = cText;
+        else text = cText;
+      }
+    }
   }
 
   // Generate fallback CSS selector
@@ -308,13 +431,27 @@ function humanLabel(action, target, value) {
 function findClickableElement(target) {
   if (!target || target === document.body || target === document.documentElement) return null;
 
-  // 1. Direct interactive controls or links
-  const control = target.closest(
-    'button, [role="button"], a[href], [role="link"], input[type="button"], input[type="submit"], input[type="reset"], input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], summary, label'
-  );
-  if (control) return control;
+  // 1. Label wrapping a form control (e.g. custom checkbox/radio icon clicked inside label)
+  const label = target.closest('label');
+  if (label) {
+    const ctrl = label.control || label.querySelector('input, select, textarea') || (label.htmlFor && document.getElementById(label.htmlFor));
+    if (ctrl) return ctrl;
+  }
 
-  // 2. Custom clickable element walk (cursor: pointer, onclick, tabindex)
+  // 2. Direct interactive controls or links
+  const direct = target.closest(
+    'button, [role="button"], a[href], [role="link"], input, select, textarea, [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], summary'
+  );
+  if (direct) return direct;
+
+  // 3. Label without input: resolve to enclosing link/button or label itself
+  if (label) {
+    const parentActionable = label.closest('a[href], button, [role="button"]');
+    if (parentActionable) return parentActionable;
+    if (label.textContent?.trim()) return label;
+  }
+
+  // 4. Custom clickable element walk (cursor: pointer, onclick, tabindex)
   let cur = target;
   for (let i = 0; i < 4 && cur && cur !== document.body; i++) {
     if (cur.getAttribute('onclick') || (cur.hasAttribute('tabindex') && cur.getAttribute('tabindex') !== '-1')) {
@@ -606,10 +743,10 @@ async function preflight(steps) {
       continue;
     }
 
-    try { await pollForTarget(step.target, { timeout: 6000 }); }
+    try { await pollForTarget(step.target, { timeout: 9000 }); }
     catch (err) { return { ok: false, failedStep: step, reason: err.reason || 'missing' }; }
 
-    if (step.action === 'press_enter' || step.action === 'click') {
+    if (step.action === 'press_enter' || step.action === 'click' || step.action === 'check' || step.action === 'uncheck' || step.action === 'select_radio') {
       hasNavAction = true;
     }
   }
@@ -644,9 +781,12 @@ async function startReplay(workflow, resumeRunId) {
     || location.hostname;
   notifyPanel({ type: 'REPLAY_STARTED', runId, targetName, workflowId: workflow.id });
 
-  // Preflight: check all non-completed steps before touching anything
+  // Preflight: For CRM form, check all non-completed steps. For generic dynamic web pages (Amazon, YouTube),
+  // check immediate next step to verify page readiness, then allow sequential runtime polling for dynamic steps.
+  const isCrm = Boolean(localStorage.getItem('crm.customers')) && Boolean(location.hash.match(/#\/customers\/([^/?]+)/));
   const nonCompleted = workflow.steps.filter(s => !completedStepIds.has(s.id));
-  const pre = await preflight(nonCompleted);
+  const stepsToPreflight = isCrm ? nonCompleted : nonCompleted.slice(0, 1);
+  const pre = await preflight(stepsToPreflight);
   if (!pre.ok) {
     sendStepStatus(runId, pre.failedStep.id, 'failed', pre.reason);
     notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: `Preflight: step "${pre.failedStep.label}" – ${pre.reason}` });
@@ -675,7 +815,7 @@ async function startReplay(workflow, resumeRunId) {
 
     let el;
     try {
-      const result = await pollForTarget(step.target, { timeout: 6000 });
+      const result = await pollForTarget(step.target, { timeout: 9000 });
       el = result.el;
     } catch (err) {
       sendStepStatus(runId, step.id, 'failed', err.reason || 'missing');
@@ -703,6 +843,16 @@ async function startReplay(workflow, resumeRunId) {
         }
       } else if (step.action === 'check' || step.action === 'uncheck') {
         const shouldBeChecked = step.action === 'check';
+        try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+        await new Promise(r => setTimeout(r, 100));
+
+        const isNavAction = Boolean(el.closest('a[href]')) || el.getAttribute('data-action') === 'a-filter-checkbox';
+        if (isNavAction) {
+          completedStepIds.add(step.id);
+          await saveRunState(runId, workflow.id, [...completedStepIds]);
+          sendStepStatus(runId, step.id, 'success', null);
+        }
+
         if (el.checked !== shouldBeChecked) {
           el.click();
         }
@@ -711,15 +861,27 @@ async function startReplay(workflow, resumeRunId) {
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, 200));
+        if (isNavAction) continue;
       } else if (step.action === 'select_radio') {
+        try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+        await new Promise(r => setTimeout(r, 100));
+
+        const isNavAction = Boolean(el.closest('a[href]'));
+        if (isNavAction) {
+          completedStepIds.add(step.id);
+          await saveRunState(runId, workflow.id, [...completedStepIds]);
+          sendStepStatus(runId, step.id, 'success', null);
+        }
+
         el.click();
         if (!el.checked) {
           el.checked = true;
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, 200));
+        if (isNavAction) continue;
       } else if (step.action === 'press_enter' || step.action === 'key') {
         try { el.focus(); } catch (_) {}
         // Persist step completion BEFORE form submission/navigation might terminate the script
@@ -737,16 +899,26 @@ async function startReplay(workflow, resumeRunId) {
         continue;
       } else if (step.action === 'click') {
         try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 120));
 
-        const isNavClick = el.tagName.toLowerCase() === 'a' || el.type === 'submit' || el.getAttribute('type') === 'submit';
+        const isNavClick = el.tagName.toLowerCase() === 'a'
+          || Boolean(el.closest('a[href]'))
+          || el.type === 'submit'
+          || el.getAttribute('type') === 'submit';
+
         if (isNavClick) {
           completedStepIds.add(step.id);
           await saveRunState(runId, workflow.id, [...completedStepIds]);
           sendStepStatus(runId, step.id, 'success', null);
         }
 
+        try {
+          el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
+        } catch (_) {}
         el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        try {
+          el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window }));
+        } catch (_) {}
         el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
         el.click();
         await new Promise(r => setTimeout(r, 350));

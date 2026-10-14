@@ -124,10 +124,25 @@ async function injectContentScript(tabId) {
   }
 }
 
+function isNewTabPage(url) {
+  if (!url) return true;
+  return url.startsWith('chrome://newtab') ||
+         url.startsWith('chrome-search://') ||
+         url === 'about:blank' ||
+         url === 'about:newtab' ||
+         url.startsWith('edge://newtab') ||
+         url === 'chrome://';
+}
+
 async function sendToContent(msg) {
   const tab = await getActiveTab();
   if (!tab || !tab.id) {
     throw new Error('No active browser tab found. Click on the tab you want to automate first.');
+  }
+
+  // If on Chrome's New Tab page, provide clear actionable guidance
+  if (isNewTabPage(tab.url)) {
+    throw new Error('This is Chrome New Tab. Click "Start Recording" to open Google Search and begin recording.');
   }
 
   // Prevent running on privileged Chrome URLs where content scripts are blocked
@@ -171,7 +186,25 @@ btnStartRec.addEventListener('click', async () => {
 
   try {
     const tab = await getActiveTab();
-    if (tab?.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('about:')) {
+    if (!tab) throw new Error('No active browser tab found.');
+
+    // If on a new tab (which looks like Google), auto-navigate to real google.com and start recording
+    if (isNewTabPage(tab.url)) {
+      pendingSourceUrl = 'https://www.google.com';
+      await chrome.storage.local.set({
+        replay_recording: { active: true, steps: [] }
+      });
+      await chrome.tabs.update(tab.id, { url: 'https://www.google.com' });
+      recording = true;
+      recIndicator.classList.remove('hidden');
+      btnStartRec.classList.add('hidden');
+      btnStopRec.classList.remove('hidden');
+      workflowNameForm.classList.add('hidden');
+      currentRecord.textContent = 'Google (Loading...)';
+      return;
+    }
+
+    if (tab?.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('about:') && !tab.url.startsWith('edge://')) {
       pendingSourceUrl = tab.url;
     }
     await chrome.storage.local.set({
@@ -406,7 +439,7 @@ btnStartReplay.addEventListener('click', async () => {
       try {
         const currentUrl = new URL(tab.url);
         const sourceUrl = new URL(selectedWorkflow.sourceUrl);
-        if (tab.url.startsWith('chrome://') || tab.url === 'about:blank' || currentUrl.origin !== sourceUrl.origin) {
+        if (isNewTabPage(tab.url) || tab.url.startsWith('chrome://') || tab.url === 'about:blank' || currentUrl.origin !== sourceUrl.origin) {
           const runId = 'run_' + Date.now();
           activeRunId = runId;
           await chrome.storage.local.set({
@@ -626,6 +659,14 @@ async function pollCurrentRecord() {
     const tab = await getActiveTab();
     if (!tab) {
       currentRecord.textContent = 'No tab open';
+      return;
+    }
+
+    if (isNewTabPage(tab.url)) {
+      currentRecord.textContent = 'Google (New Tab)';
+      if (selectedWorkflow) {
+        rpTargetRecord.textContent = 'Google (New Tab)';
+      }
       return;
     }
 
