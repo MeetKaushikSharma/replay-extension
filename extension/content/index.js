@@ -64,6 +64,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       }
 
+      case 'RESET_DEMO_DATA': {
+        // Reset localStorage to seed data
+        const seed = [
+          { id: 'c1', name: 'Alice Johnson', status: 'New', notes: '', updatedAt: null },
+          { id: 'c2', name: 'Bob Smith',     status: 'New', notes: '', updatedAt: null },
+          { id: 'c3', name: 'Carol Diaz',    status: 'New', notes: '', updatedAt: null },
+        ];
+        localStorage.setItem('crm.customers', JSON.stringify(seed));
+        sendResponse({ ok: true });
+        break;
+      }
+
       case 'GET_RECORD_INFO': {
         const nameEl = document.querySelector('[data-testid="record-name"]');
         const m2 = location.hash.match(/#\/customers\/([^/?]+)/);
