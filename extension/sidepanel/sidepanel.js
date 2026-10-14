@@ -85,21 +85,22 @@ async function saveWorkflows() {
 }
 
 // ── Messaging helpers ───────────────────────────────────────────────────────
-// Side panel → content via chrome.tabs.sendMessage (works on any site).
-// Content → panel via chrome.runtime.sendMessage (relayed by background).
+// Side panel talks to the currently focused browser tab.
+// Queries the live active tab dynamically (never uses stale stored tab IDs).
 
-async function getActiveTabId() {
-  // Try the tab that most recently sent us a CONTENT_READY (most reliable)
-  const { crmTabId, activeTabId } = await chrome.storage.local.get(['crmTabId', 'activeTabId']);
-  if (crmTabId) return crmTabId;
-  if (activeTabId) return activeTabId;
-  // Final fallback: active tab in current window
-  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return active?.id ?? null;
+async function getActiveTab() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tabs && tabs[0]) return tabs[0];
+  } catch (_) {}
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs && tabs[0]) return tabs[0];
+  } catch (_) {}
+  return null;
 }
 
 async function injectContentScript(tabId) {
-  // Ask background to inject content/content.js into the tab
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type: 'INJECT_CONTENT', tabId }, (resp) => {
       if (chrome.runtime.lastError || resp?.error) {
@@ -112,10 +113,17 @@ async function injectContentScript(tabId) {
 }
 
 async function sendToContent(msg) {
-  let tabId = await getActiveTabId();
-  if (!tabId) throw new Error('No active tab found. Click on the tab you want to automate first.');
+  const tab = await getActiveTab();
+  if (!tab || !tab.id) {
+    throw new Error('No active browser tab found. Click on the tab you want to automate first.');
+  }
 
-  // First attempt
+  // Prevent running on privileged Chrome URLs where content scripts are blocked
+  if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('edge://') || tab.url.startsWith('about:'))) {
+    const pageName = tab.url.split('/')[2] || 'system';
+    throw new Error(`Cannot automate Chrome ${pageName} page. Open any website (e.g. google.com, youtube.com, or CRM).`);
+  }
+
   const attempt = (id) => new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(id, msg, (resp) => {
       if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -124,20 +132,15 @@ async function sendToContent(msg) {
   });
 
   try {
-    return await attempt(tabId);
+    return await attempt(tab.id);
   } catch (e) {
-    // Content script not present → inject it, then retry once
+    // If content script was not yet active on this tab (e.g. opened before extension reloaded)
     if (e.message.includes('Receiving end does not exist') ||
         e.message.includes('Could not establish connection')) {
-      await injectContentScript(tabId);
-      // Small wait for content script to initialize its listeners
-      await new Promise(r => setTimeout(r, 300));
-      // Re-query the tab ID in case activeTabId was stale
-      tabId = await getActiveTabId();
-      return await attempt(tabId);
+      await injectContentScript(tab.id);
+      await new Promise(r => setTimeout(r, 250));
+      return await attempt(tab.id);
     }
-    // Any other error (e.g. chrome:// page)
-    chrome.storage.local.remove('crmTabId').catch(() => {});
     throw e;
   }
 }
@@ -574,11 +577,32 @@ function esc(str) {
 // ── Poll for current record ──────────────────────────────────────────────────
 async function pollCurrentRecord() {
   try {
+    const tab = await getActiveTab();
+    if (!tab) {
+      currentRecord.textContent = 'No tab open';
+      return;
+    }
+
+    if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:') || tab.url.startsWith('edge://'))) {
+      currentRecord.textContent = 'System page';
+      return;
+    }
+
     const result = await sendToContent({ type: 'GET_RECORD_INFO' });
     if (result?.name) {
       currentRecord.textContent = result.name;
+      if (selectedWorkflow) {
+        rpTargetRecord.textContent = result.name;
+      }
+    } else if (tab.title) {
+      currentRecord.textContent = tab.title;
+      if (selectedWorkflow) {
+        rpTargetRecord.textContent = tab.title;
+      }
     }
-  } catch {}
+  } catch (_) {
+    // Tab may still be loading or initializing
+  }
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -587,7 +611,18 @@ async function init() {
   renderWorkflowsList();
   renderWorkflowInfo();
   pollCurrentRecord();
-  // Poll every 2s to keep current record name updated
+
+  // Instantly update when user switches tabs or navigates
+  chrome.tabs.onActivated.addListener(() => {
+    pollCurrentRecord();
+  });
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status === 'complete' || changeInfo.title) {
+      pollCurrentRecord();
+    }
+  });
+
+  // Secondary 2s heartbeat
   setInterval(pollCurrentRecord, 2000);
 }
 

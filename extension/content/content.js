@@ -1,7 +1,9 @@
 // content/content.js – Single-file content script for RePlay
-// Merging all modules eliminates any possible script-load-order failures.
-// A single try/catch at init time reports errors to the side panel.
+(() => {
 'use strict';
+
+if (window.__replayContentScriptInjected) return;
+window.__replayContentScriptInjected = true;
 
 // ═══════════════════════════════════════════════════════════
 // MODULE: selectors.js
@@ -788,3 +790,4 @@ registerTab();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) registerTab(); });
 
 console.log('[RePlay] content script ready on', location.href);
+})();
