@@ -5,13 +5,19 @@
   "description": "Record a workflow once, replay it safely on multiple records. Local-first, no AI, no remote code.",
   "minimum_chrome_version": "114",
   "permissions": ["storage", "sidePanel"],
-  "host_permissions": ["http://localhost:5173/*"],
+  "host_permissions": [
+    "http://localhost:5173/*",
+    "https://crm-demo-mu-sandy.vercel.app/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["http://localhost:5173/*"],
+      "matches": [
+        "http://localhost:5173/*",
+        "https://crm-demo-mu-sandy.vercel.app/*"
+      ],
       "js": ["content/content.js"],
       "run_at": "document_idle",
       "all_frames": false

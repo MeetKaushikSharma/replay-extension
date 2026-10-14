@@ -99,7 +99,9 @@ Content script ──sendMessage(_fromContent:true)──► Background SW ─�
 
 ## Explicit Scope
 
-**Supported:** The demo CRM at `http://localhost:5173/*` only.
+**Supported:** The demo CRM at:
+- `http://localhost:5173/*` (local dev)
+- `https://crm-demo-mu-sandy.vercel.app/*` (production)
 
 **Not supported:**
 - Any other website
@@ -149,16 +151,16 @@ node --test tests/selectors.test.js
 
 ## Deployment
 
-### CRM Demo (Vercel)
+### CRM Demo
+
+**Live:** https://crm-demo-mu-sandy.vercel.app/
 
 ```bash
 cd crm-demo
-npm run build
-# Then deploy dist/ to Vercel via dashboard or:
-# vercel --prod
+npx vercel --prod
 ```
 
-After deploying, add the Vercel URL to `extension/manifest.json` `host_permissions` and `content_scripts.matches`.
+The extension `manifest.json` already includes the deployed URL in `host_permissions` and `content_scripts.matches` — no further changes needed after deploy.
 
 ### GitHub
 

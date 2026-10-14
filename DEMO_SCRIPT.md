@@ -82,17 +82,11 @@ Total time: ~75 seconds. Key points:
 
 ---
 
-## Vercel Deploy (one-time)
+## Vercel Deploy ✅ Done
 
-```bash
-cd crm-demo
-npx vercel login      # auth with GitHub
-npx vercel --prod     # deploy — note the URL (e.g. https://replay-crm.vercel.app)
-```
+**Live CRM:** https://crm-demo-mu-sandy.vercel.app/
 
-After deploy, add the URL to `extension/manifest.json`:
-```json
-"host_permissions": ["http://localhost:5173/*", "https://replay-crm.vercel.app/*"],
-"content_scripts": [{ "matches": ["http://localhost:5173/*", "https://replay-crm.vercel.app/*"], ... }]
-```
-Then reload the extension and navigate to the deployed URL.
+The extension already supports this URL (added to `manifest.json`).  
+After reloading the extension, open `https://crm-demo-mu-sandy.vercel.app/#/customers/c1` and the side panel connects automatically.
+
+> Note: `localStorage` is origin-scoped — data on localhost and Vercel are separate. Reset demo data after switching origins.
