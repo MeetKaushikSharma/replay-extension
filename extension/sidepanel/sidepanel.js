@@ -71,13 +71,40 @@ async function saveWorkflows() {
 }
 
 // ── Messaging helpers ───────────────────────────────────────────────────────
-function sendToContent(msg) {
+// Side panel talks DIRECTLY to the content script via chrome.tabs.sendMessage.
+// This does NOT require the `tabs` permission — only host_permissions for the URL.
+// The background relay (runtime.sendMessage) is only used for content→panel direction.
+
+async function getCrmTabId() {
+  // Primary: tab ID registered by content script on load
+  const { crmTabId } = await chrome.storage.local.get('crmTabId');
+  if (crmTabId) return crmTabId;
+
+  // Fallback: active tab in current window (side panel shares the browser window)
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return active?.id ?? null;
+}
+
+async function sendToContent(msg) {
+  const tabId = await getCrmTabId();
+  if (!tabId) {
+    throw new Error('CRM tab not found. Open http://localhost:5173 in this window first.');
+  }
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(msg, (resp) => {
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(resp);
+    chrome.tabs.sendMessage(tabId, msg, (resp) => {
+      if (chrome.runtime.lastError) {
+        // Tab ID may be stale – clear it so next call uses fallback
+        chrome.storage.local.remove('crmTabId').catch(() => {});
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve(resp);
+      }
     });
   });
+}
+
+async function sendConfirmToContent(msg) {
+  try { await sendToContent(msg); } catch { /* replayer handles timeout */ }
 }
 
 // ── Recording controls ──────────────────────────────────────────────────────
