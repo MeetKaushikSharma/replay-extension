@@ -102,23 +102,38 @@ btnStartRec.addEventListener('click', async () => {
 btnStopRec.addEventListener('click', async () => {
   try {
     const result = await sendToContent({ type: 'STOP_RECORDING' });
+
     recording = false;
     recIndicator.classList.add('hidden');
     btnStartRec.classList.remove('hidden');
     btnStopRec.classList.add('hidden');
 
-    if (result?.steps) {
-      pendingSteps = result.steps;
-      if (pendingSteps.length > 0) {
-        workflowNameForm.classList.remove('hidden');
-      } else {
-        showWarning('No steps were recorded. Nothing to save.');
-      }
+    // Handle relay errors
+    if (result?.error) {
+      showWarning(`⚠ Stop recording error: ${result.error}. Try reloading the CRM tab.`);
+      return;
+    }
+
+    const steps = result?.steps ?? [];
+    pendingSteps = steps;
+
+    if (steps.length > 0) {
+      workflowNameForm.classList.remove('hidden');
+      // Scroll into view in case panel is short
+      workflowNameForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } else {
+      showWarning('⚠ No steps were recorded. Make sure you interact with the CRM form controls while recording.');
     }
   } catch (e) {
-    showError(`Failed to stop recording: ${e.message}`);
+    // Reset UI state even on error
+    recording = false;
+    recIndicator.classList.add('hidden');
+    btnStartRec.classList.remove('hidden');
+    btnStopRec.classList.add('hidden');
+    showWarning(`⚠ Could not stop recording: ${e.message}. Reload the CRM tab and try again.`);
   }
 });
+
 
 btnSaveWorkflow.addEventListener('click', async () => {
   const name = workflowNameInput.value.trim() || 'Untitled Workflow';

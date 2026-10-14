@@ -55,16 +55,24 @@ function isConsequential(el) {
   return /save|submit|delete|remove|confirm|apply/.test(testid + ' ' + text + ' ' + id);
 }
 
-// Pending change tracking (for select/input/textarea – record final value, not per-keystroke)
-const _pendingChanges = new Map(); // el → { timer, originalValue }
+// Pending change tracking – debounce to ONE step per final value
+// Map: el → { timer }
+const _pendingChanges = new Map();
 
-function handleChange(e) {
+// handleInput handles BOTH 'input' and 'change' events (same debounce bucket per element).
+// For selects, 'change' fires immediately on user pick.
+// For textarea/input, 'input' fires on every keystroke → debounce 600ms to get final value.
+// 'change' fires on blur for textarea/input → restarts debounce with current value.
+function handleInputOrChange(e) {
   if (!_recording) return;
   const el = e.target;
   const tag = el.tagName.toLowerCase();
   if (!['select', 'input', 'textarea'].includes(tag)) return;
 
-  // Re-use existing pending timer (debounce to get final value)
+  // Skip checkboxes / radios
+  if (el.type === 'checkbox' || el.type === 'radio') return;
+
+  // Cancel any existing debounce for this element
   if (_pendingChanges.has(el)) {
     clearTimeout(_pendingChanges.get(el).timer);
   }
@@ -92,6 +100,15 @@ function recordChangeStep(el) {
   }
 
   const value = sensitive ? null : el.value;
+
+  // Deduplicate: if the last step for this testid has the same value, skip
+  const lastForTarget = [..._steps].reverse().find(
+    s => s.target.testid === target.testid && s.target.testid
+  );
+  if (lastForTarget && lastForTarget.value === value && !sensitive) {
+    return; // no change from last recorded value
+  }
+
   const step = {
     id: makeStepId(),
     order: _steps.length,
@@ -115,6 +132,14 @@ function handleClick(e) {
   // Ignore the REC badge itself and extension UI
   if (el.id === '__replay_badge__') return;
   if (el.closest('#__replay_badge_wrapper__')) return;
+
+  // Flush any pending input steps BEFORE recording this click
+  // so the order is: type → click (not click → type)
+  for (const [pendingEl, { timer }] of _pendingChanges) {
+    clearTimeout(timer);
+    recordChangeStep(pendingEl);
+  }
+  _pendingChanges.clear();
 
   const { buildTarget } = window.__replaySelectors;
   const rid = getCurrentRecordId();
@@ -169,18 +194,24 @@ function removeBadge() {
 function startRecording(recordId) {
   _recording = true;
   _steps = [];
+  _pendingChanges.clear();
   _recordId = recordId || getCurrentRecordId();
-  document.addEventListener('change', handleChange, { capture: true });
-  document.addEventListener('click', handleClick, { capture: true });
+  // Listen to BOTH 'input' (fires every keystroke) and 'change' (fires on blur/select pick)
+  // Same handler — the debounce ensures ONE step per final value
+  document.addEventListener('input',  handleInputOrChange, { capture: true });
+  document.addEventListener('change', handleInputOrChange, { capture: true });
+  document.addEventListener('click',  handleClick, { capture: true });
   injectBadge();
   notifyPanel({ type: 'RECORDING_STARTED' });
 }
 
 function stopRecording() {
   _recording = false;
-  document.removeEventListener('change', handleChange, { capture: true });
-  document.removeEventListener('click', handleClick, { capture: true });
-  // Flush any pending debounced changes
+  document.removeEventListener('input',  handleInputOrChange, { capture: true });
+  document.removeEventListener('change', handleInputOrChange, { capture: true });
+  document.removeEventListener('click',  handleClick, { capture: true });
+
+  // Flush any pending debounced changes (in order)
   for (const [el, { timer }] of _pendingChanges) {
     clearTimeout(timer);
     recordChangeStep(el);
@@ -189,7 +220,8 @@ function stopRecording() {
   removeBadge();
 
   const recordName = document.querySelector('[data-testid="record-name"]')?.textContent?.trim() || '';
-  const result = { steps: _steps, sourceRecordLabel: recordName };
+  const steps = [..._steps]; // snapshot
+  const result = { steps, sourceRecordLabel: recordName };
   notifyPanel({ type: 'RECORDING_STOPPED', ...result });
   return result;
 }

@@ -96,4 +96,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // keep async sendResponse alive
 });
 
+// ── Register this tab with the background so it can relay to us ──────────────
+// Called on initial load AND whenever the page becomes visible again.
+function registerWithBackground() {
+  chrome.runtime.sendMessage({ type: 'CONTENT_READY' }).catch(() => {});
+}
+
+registerWithBackground();
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) registerWithBackground();
+});
+
 console.log('[RePlay] Content script loaded on', location.href);
