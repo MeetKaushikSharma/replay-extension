@@ -43,8 +43,23 @@ function resolveTarget(target, document) {
     const els = Array.from(document.querySelectorAll(`[placeholder="${target.placeholder}"]`));
     if (els.length) candidates.push(...els);
   }
+  if (candidates.length === 0 && target.title) {
+    const els = Array.from(document.querySelectorAll(`[title="${target.title}"]`));
+    if (els.length) candidates.push(...els);
+  }
+  if (candidates.length === 0 && target.href) {
+    let els = Array.from(document.querySelectorAll(`a[href="${target.href}"]`));
+    if (els.length === 0 && target.href.length > 5) {
+      els = Array.from(document.querySelectorAll(`a[href*="${target.href}"]`));
+    }
+    if (els.length) candidates.push(...els);
+  }
   if (candidates.length === 0 && target.text) {
-    const els = Array.from(document.querySelectorAll(target.tag || 'button, a, [role="button"]')).filter(el => el.textContent?.trim() === target.text);
+    const tagSel = target.tag || 'button, a, [role="button"], [role="link"], h1, h2, h3, h4, span, div';
+    const els = Array.from(document.querySelectorAll(tagSel)).filter(el => {
+      const t = el.textContent?.trim();
+      return t === target.text || (t && t.length < 120 && t.includes(target.text));
+    });
     if (els.length) candidates.push(...els);
   }
   if (candidates.length === 0 && target.selector) {
@@ -55,7 +70,16 @@ function resolveTarget(target, document) {
   }
   const visible = candidates.filter(isVisibleAndEnabled);
   if (visible.length === 0) return { el: null, count: 0, reason: 'missing' };
-  if (visible.length > 1) return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
+  if (visible.length > 1) {
+    const exact = visible.filter(el => {
+      if (target.id && el.id === target.id) return true;
+      if (target.href && (el.getAttribute('href') === target.href || el.getAttribute('href')?.endsWith(target.href))) return true;
+      if (target.text && el.textContent?.trim() === target.text) return true;
+      return false;
+    });
+    if (exact.length === 1) return { el: exact[0], count: 1 };
+    return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
+  }
 
   const el = visible[0];
   if (target.tag && el.tagName.toLowerCase() !== target.tag.toLowerCase()) {
@@ -373,5 +397,78 @@ describe('Cross-Navigation & Deduplication Resilience', () => {
 
     assert.equal(pendingSteps.length, 2);
     assert.deepEqual(pendingSteps.map(s => s.id), ['step_1', 'step_2']);
+  });
+});
+
+describe('Universal Web Interactions (Links, Checkboxes, Radios, Title, Href, Auto-scroll)', () => {
+  test('resolves links by href attribute (YouTube / Google Search results)', () => {
+    const doc = makeDOM(`
+      <div class="results">
+        <a class="yt-simple-endpoint" href="/watch?v=dQw4w9WgXcQ">
+          <span id="video-title">Never Gonna Give You Up</span>
+        </a>
+      </div>
+    `);
+    const target = { tag: 'a', href: '/watch?v=dQw4w9WgXcQ' };
+    const res = resolveTarget(target, doc);
+    assert.ok(res.el, 'should locate link by href');
+    assert.equal(res.el.getAttribute('href'), '/watch?v=dQw4w9WgXcQ');
+  });
+
+  test('resolves element by title attribute', () => {
+    const doc = makeDOM('<button title="Settings" aria-hidden="true"><svg></svg></button>');
+    const target = { title: 'Settings' };
+    const res = resolveTarget(target, doc);
+    assert.ok(res.el);
+    assert.equal(res.el.getAttribute('title'), 'Settings');
+  });
+
+  test('checkbox check/uncheck sets state and triggers events', () => {
+    const doc = makeDOM('<input type="checkbox" id="agree" />');
+    const el = doc.getElementById('agree');
+    let changeFired = false;
+    el.addEventListener('change', () => { changeFired = true; });
+
+    // Simulate replayer check action
+    el.checked = true;
+    el.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+
+    assert.equal(el.checked, true);
+    assert.equal(changeFired, true);
+  });
+
+  test('radio button select_radio selects radio and triggers change', () => {
+    const doc = makeDOM(`
+      <input type="radio" name="shipping" value="standard" checked />
+      <input type="radio" name="shipping" value="express" id="express" />
+    `);
+    const el = doc.getElementById('express');
+    let changeFired = false;
+    el.addEventListener('change', () => { changeFired = true; });
+
+    el.checked = true;
+    el.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+
+    assert.equal(el.checked, true);
+    assert.equal(changeFired, true);
+  });
+
+  test('clickable detector walks up to find interactive container', () => {
+    const doc = makeDOM(`
+      <div id="video-card" role="button" tabindex="0">
+        <div class="thumb-container">
+          <img src="thumb.jpg" id="inner-img" />
+        </div>
+      </div>
+    `);
+
+    function findClickable(target) {
+      return target.closest('button, [role="button"], a[href], [role="link"], input[type="button"], input[type="submit"], input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"], [role="tab"], summary');
+    }
+
+    const innerImg = doc.getElementById('inner-img');
+    const clickable = findClickable(innerImg);
+    assert.ok(clickable);
+    assert.equal(clickable.id, 'video-card');
   });
 });

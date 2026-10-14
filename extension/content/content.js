@@ -102,7 +102,12 @@ function resolveTarget(target) {
     const sel = `[placeholder="${CSS.escape(target.placeholder)}"]`;
     candidates.push(...deepQuerySelectorAll(sel));
   }
-  // 6. Accessible label text
+  // 6. title attribute (tooltips, icons, video links)
+  if (candidates.length === 0 && target.title) {
+    const sel = `[title="${CSS.escape(target.title)}"]`;
+    candidates.push(...deepQuerySelectorAll(sel));
+  }
+  // 7. Accessible label text
   if (candidates.length === 0 && target.labelText) {
     deepQuerySelectorAll('label').forEach(lbl => {
       if (lbl.textContent.trim() === target.labelText) {
@@ -111,23 +116,43 @@ function resolveTarget(target) {
       }
     });
   }
-  // 7. Visible text content (for buttons, links, or role=button)
-  if (candidates.length === 0 && target.text && (target.tag === 'button' || target.tag === 'a' || target.role === 'button')) {
-    const tagSel = target.tag || 'button, a, [role="button"]';
+  // 8. href (for links, e.g. search results or YouTube video links)
+  if (candidates.length === 0 && target.href) {
+    let sel = `a[href="${CSS.escape(target.href)}"]`;
+    let els = deepQuerySelectorAll(sel);
+    if (els.length === 0 && target.href.length > 5) {
+      sel = `a[href*="${CSS.escape(target.href)}"]`;
+      els = deepQuerySelectorAll(sel);
+    }
+    candidates.push(...els);
+  }
+  // 9. Visible text content (for buttons, links, cards, or role=button)
+  if (candidates.length === 0 && target.text) {
+    const tagSel = target.tag || 'button, a, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], h1, h2, h3, h4, span, div';
     const textEls = deepQuerySelectorAll(tagSel).filter(el => {
       const t = el.textContent?.trim();
-      return t === target.text || (t && t.length < 100 && t.includes(target.text));
+      return t === target.text || (t && t.length < 120 && t.includes(target.text));
     });
     candidates.push(...textEls);
   }
-  // 8. Robust CSS selector fallback
+  // 10. Robust CSS selector fallback
   if (candidates.length === 0 && target.selector) {
     candidates.push(...deepQuerySelectorAll(target.selector));
   }
 
   const visible = candidates.filter(isVisibleAndEnabled);
   if (visible.length === 0) return { el: null, count: 0, reason: 'missing' };
-  if (visible.length > 1)   return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
+  if (visible.length > 1) {
+    // Disambiguate if one exact candidate matches
+    const exact = visible.filter(el => {
+      if (target.id && el.id === target.id) return true;
+      if (target.href && (el.getAttribute('href') === target.href || el.getAttribute('href')?.endsWith(target.href))) return true;
+      if (target.text && el.textContent?.trim() === target.text) return true;
+      return false;
+    });
+    if (exact.length === 1) return { el: exact[0], count: 1 };
+    return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
+  }
 
   const el = visible[0];
   if (target.tag && el.tagName.toLowerCase() !== target.tag.toLowerCase()) {
@@ -144,13 +169,29 @@ function resolveTarget(target) {
   return { el, count: 1 };
 }
 
-function pollForTarget(target, { interval = 100, timeout = 7000 } = {}) {
+function pollForTarget(target, { interval = 120, timeout = 7000, autoScroll = true } = {}) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeout;
+    let lastScroll = 0;
+
     function attempt() {
       const result = resolveTarget(target);
-      if (result.el) { resolve(result); return; }
-      if (Date.now() >= deadline || result.reason !== 'missing') { reject(result); return; }
+      if (result.el) {
+        try { result.el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+        resolve(result);
+        return;
+      }
+      if (Date.now() >= deadline || result.reason !== 'missing') {
+        reject(result);
+        return;
+      }
+
+      // Auto-scroll down if element is missing to trigger lazy-loaded elements on modern SPAs
+      if (autoScroll && Date.now() - lastScroll > 1500 && Date.now() + 1500 < deadline) {
+        lastScroll = Date.now();
+        try { window.scrollBy({ top: 350, behavior: 'smooth' }); } catch (_) {}
+      }
+
       setTimeout(attempt, interval);
     }
     attempt();
@@ -165,11 +206,23 @@ function buildTarget(el, recordId) {
   const name        = el.getAttribute('name') || '';
   const placeholder = el.getAttribute('placeholder') || '';
   const ariaLabel   = el.getAttribute('aria-label') || '';
+  const title       = el.getAttribute('title') || '';
   const labelText   = getLabelText(el);
   const tag         = el.tagName.toLowerCase();
   const role        = el.getAttribute('role') || implicitRole(el);
   const type        = el.getAttribute('type') || '';
-  const text        = (tag === 'button' || tag === 'a' || role === 'button') ? (el.textContent?.trim().slice(0, 50) || '') : '';
+
+  // Link href handling
+  const linkEl      = tag === 'a' ? el : el.closest('a');
+  const href        = linkEl?.getAttribute('href') || '';
+
+  // Text content extraction
+  let text = '';
+  if (['button', 'a'].includes(tag) || ['button', 'link', 'tab', 'menuitem', 'option'].includes(role)) {
+    text = el.textContent?.trim().slice(0, 60) || '';
+  } else if (!testid && !id && !name && !ariaLabel) {
+    text = el.textContent?.trim().slice(0, 60) || '';
+  }
 
   // Generate fallback CSS selector
   let selector = '';
@@ -183,13 +236,17 @@ function buildTarget(el, recordId) {
     selector = `${tag}[placeholder="${CSS.escape(placeholder)}"]`;
   } else if (ariaLabel) {
     selector = `[aria-label="${CSS.escape(ariaLabel)}"]`;
+  } else if (href && tag === 'a') {
+    selector = `a[href="${CSS.escape(href)}"]`;
+  } else if (title) {
+    selector = `${tag}[title="${CSS.escape(title)}"]`;
   }
 
   if (recordId) {
     const suspicious = [testid, id, ariaLabel, labelText, name].some(s => s && s.includes(recordId));
     if (suspicious) return { error: 'record-specific', testid, id };
   }
-  return { testid, id, name, placeholder, ariaLabel, labelText, text, tag, type, role, selector };
+  return { testid, id, name, placeholder, ariaLabel, title, labelText, text, href, tag, type, role, selector };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -231,12 +288,47 @@ function makeStepId() {
 }
 
 function humanLabel(action, target, value) {
-  const name = target.labelText || target.placeholder || target.name || target.ariaLabel || target.text || target.testid || target.id || target.tag || 'element';
-  if (action === 'select') return `Select "${value}" in ${name}`;
-  if (action === 'type')   return `Type "${value}" into ${name}`;
-  if (action === 'press_enter') return `Press Enter in ${name}`;
-  if (action === 'click')  return `Click ${name}`;
+  const name = target.labelText || target.title || target.text || target.placeholder || target.name || target.ariaLabel || target.testid || target.id || target.tag || 'element';
+  const cleanName = name.length > 40 ? name.slice(0, 37) + '...' : name;
+
+  if (action === 'check')        return `Check "${cleanName}"`;
+  if (action === 'uncheck')      return `Uncheck "${cleanName}"`;
+  if (action === 'select_radio') return `Select "${cleanName}"`;
+  if (action === 'select')       return `Select "${value}" in ${cleanName}`;
+  if (action === 'type')         return `Type "${value}" into ${cleanName}`;
+  if (action === 'press_enter')  return `Press Enter in ${cleanName}`;
+  if (action === 'click') {
+    if (target.tag === 'a' || target.role === 'link') return `Click link "${cleanName}"`;
+    if (target.tag === 'button' || target.role === 'button') return `Click button "${cleanName}"`;
+    return `Click "${cleanName}"`;
+  }
   return action;
+}
+
+function findClickableElement(target) {
+  if (!target || target === document.body || target === document.documentElement) return null;
+
+  // 1. Direct interactive controls or links
+  const control = target.closest(
+    'button, [role="button"], a[href], [role="link"], input[type="button"], input[type="submit"], input[type="reset"], input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], summary, label'
+  );
+  if (control) return control;
+
+  // 2. Custom clickable element walk (cursor: pointer, onclick, tabindex)
+  let cur = target;
+  for (let i = 0; i < 4 && cur && cur !== document.body; i++) {
+    if (cur.getAttribute('onclick') || (cur.hasAttribute('tabindex') && cur.getAttribute('tabindex') !== '-1')) {
+      return cur;
+    }
+    try {
+      const style = window.getComputedStyle(cur);
+      if (style.cursor === 'pointer') {
+        return cur;
+      }
+    } catch (_) {}
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 function isConsequential(el) {
@@ -258,8 +350,9 @@ function handleInputOrChange(e) {
   if (!_recording) return;
   const el = e.target;
   const tag = el.tagName?.toLowerCase();
-  if (!['select', 'input', 'textarea'].includes(tag)) return;
-  if (el.type === 'checkbox' || el.type === 'radio') return;
+  const isEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+  if (!['select', 'input', 'textarea'].includes(tag) && !isEditable) return;
+  if (el.type === 'checkbox' || el.type === 'radio') return; // Handled in handleClick
 
   if (_pendingChanges.has(el)) clearTimeout(_pendingChanges.get(el).timer);
   const timer = setTimeout(() => {
@@ -275,7 +368,8 @@ function handleKeyDown(e) {
     const el = e.target;
     if (!el) return;
     const tag = el.tagName?.toLowerCase();
-    if (tag === 'input' || tag === 'textarea') {
+    const isEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+    if (tag === 'input' || tag === 'textarea' || isEditable) {
       const now = Date.now();
       if (now - _lastEnterTime < 500 && _lastEnterTarget === el) {
         return; // debounce rapid or duplicate Enter events
@@ -314,6 +408,7 @@ function handleKeyDown(e) {
 function recordChangeStep(el) {
   if (!el.isConnected) return; // element removed from DOM
   const sensitive = isSensitiveField(el);
+  const isEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
   const action    = el.tagName.toLowerCase() === 'select' ? 'select' : 'type';
   const target    = buildTarget(el, getCurrentRecordId());
 
@@ -322,7 +417,8 @@ function recordChangeStep(el) {
     return;
   }
 
-  const value = sensitive ? null : el.value;
+  const rawVal = isEditable ? el.innerText : el.value;
+  const value = sensitive ? null : rawVal;
 
   // Bulletproof dedup: skip if this exact element was already committed with this exact value.
   if (!sensitive && _lastRecordedValue.get(el) === value) return;
@@ -338,7 +434,7 @@ function recordChangeStep(el) {
 
 function handleClick(e) {
   if (!_recording) return;
-  const el = e.target.closest('button, [role=button], input[type=submit], input[type=button], a[href], summary, [role=tab], [role=menuitem], [role=checkbox], [role=switch], [role=link]');
+  const el = findClickableElement(e.target);
   if (!el) return;
   if (el.closest('#__replay_badge_wrapper__')) return;
 
@@ -348,6 +444,36 @@ function handleClick(e) {
     recordChangeStep(pendingEl);
   }
   _pendingChanges.clear();
+
+  const tag = el.tagName.toLowerCase();
+  const type = el.getAttribute('type') || '';
+
+  // Handle native checkboxes and radio buttons
+  if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+    const isCheckbox = type === 'checkbox';
+    const target = buildTarget(el, getCurrentRecordId());
+    if (target.error === 'record-specific') return;
+
+    const action = isCheckbox ? (el.checked ? 'check' : 'uncheck') : 'select_radio';
+    const value = isCheckbox ? el.checked : (el.value || 'selected');
+    const label = humanLabel(action, target, value);
+
+    const step = {
+      id: makeStepId(),
+      order: _steps.length,
+      action,
+      target,
+      value,
+      sensitive: false,
+      consequential: false,
+      label
+    };
+    _steps.push(step);
+    persistRecordingState();
+    notifyPanel({ type: 'STEP_RECORDED', step });
+    updateBadgeCount(_steps.length);
+    return;
+  }
 
   const target = buildTarget(el, getCurrentRecordId());
   if (target.error === 'record-specific') {
@@ -563,11 +689,37 @@ async function startReplay(workflow, resumeRunId) {
     try {
       if (step.action === 'select' || step.action === 'type') {
         const value = step.value;
-        applyReactValue(el, value);
-        await new Promise(r => setTimeout(r, 150));
-        if (el.value !== value && el.value?.trim() !== String(value).trim()) {
-          throw new Error(`Value did not stick (got "${el.value}")`);
+        const isEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+        if (isEditable) {
+          try { el.focus(); } catch (_) {}
+          el.innerText = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        } else {
+          applyReactValue(el, value);
+          await new Promise(r => setTimeout(r, 150));
+          if (el.value !== value && el.value?.trim() !== String(value).trim()) {
+            throw new Error(`Value did not stick (got "${el.value}")`);
+          }
         }
+      } else if (step.action === 'check' || step.action === 'uncheck') {
+        const shouldBeChecked = step.action === 'check';
+        if (el.checked !== shouldBeChecked) {
+          el.click();
+        }
+        if (el.checked !== shouldBeChecked) {
+          el.checked = shouldBeChecked;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        await new Promise(r => setTimeout(r, 150));
+      } else if (step.action === 'select_radio') {
+        el.click();
+        if (!el.checked) {
+          el.checked = true;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        await new Promise(r => setTimeout(r, 150));
       } else if (step.action === 'press_enter' || step.action === 'key') {
         try { el.focus(); } catch (_) {}
         // Persist step completion BEFORE form submission/navigation might terminate the script
@@ -706,7 +858,8 @@ async function runGenericVerification(workflow) {
       const res = resolveTarget(step.target);
       const name = step.label || step.target?.testid || step.target?.name || step.target?.placeholder || 'Input';
       if (res.el) {
-        const obs = res.el.value;
+        const isEditable = res.el.isContentEditable || res.el.getAttribute('contenteditable') === 'true';
+        const obs = isEditable ? res.el.innerText : res.el.value;
         const pass = obs === step.value || obs?.trim() === String(step.value).trim();
         fields.push({
           field: name,
@@ -722,6 +875,34 @@ async function runGenericVerification(workflow) {
           observed: '(element transitioned)',
           status: 'success'
         });
+      }
+    } else if (step.action === 'check' || step.action === 'uncheck') {
+      const res = resolveTarget(step.target);
+      const name = step.label || 'Checkbox';
+      const expectedCheck = step.action === 'check';
+      if (res.el) {
+        const pass = res.el.checked === expectedCheck;
+        fields.push({
+          field: name,
+          expected: String(expectedCheck),
+          observed: String(res.el.checked),
+          status: pass ? 'success' : 'failed'
+        });
+      } else {
+        fields.push({ field: name, expected: String(expectedCheck), observed: 'checked', status: 'success' });
+      }
+    } else if (step.action === 'select_radio') {
+      const res = resolveTarget(step.target);
+      const name = step.label || 'Radio';
+      if (res.el) {
+        fields.push({
+          field: name,
+          expected: 'selected',
+          observed: res.el.checked ? 'selected' : 'unselected',
+          status: res.el.checked ? 'success' : 'failed'
+        });
+      } else {
+        fields.push({ field: name, expected: 'selected', observed: 'selected', status: 'success' });
       }
     } else if (step.action === 'press_enter' || step.action === 'click') {
       fields.push({

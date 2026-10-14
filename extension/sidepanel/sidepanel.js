@@ -5,6 +5,7 @@
 let recording = false;
 let pendingSteps = [];   // steps captured during recording (before save)
 let pendingSourceLabel = ''; // sourceRecordLabel from STOP_RECORDING response
+let pendingSourceUrl = '';   // URL where recording was initiated
 let savedWorkflows = []; // loaded from chrome.storage.local
 let selectedWorkflow = null;
 let activeRunId = null;
@@ -169,6 +170,10 @@ btnStartRec.addEventListener('click', async () => {
   noStepsMsg.classList.remove('hidden');
 
   try {
+    const tab = await getActiveTab();
+    if (tab?.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('about:')) {
+      pendingSourceUrl = tab.url;
+    }
     await chrome.storage.local.set({
       replay_recording: { active: true, steps: [] }
     });
@@ -228,6 +233,7 @@ btnSaveWorkflow.addEventListener('click', async () => {
     name,
     createdAt: new Date().toISOString(),
     sourceRecordLabel: pendingSourceLabel,
+    sourceUrl: pendingSourceUrl,
     steps: pendingSteps.map((s, i) => ({ ...s, order: i }))
   };
   savedWorkflows.push(workflow);
@@ -245,7 +251,7 @@ btnDiscardWorkflow.addEventListener('click', () => {
 });
 
 // ── Workflows list ──────────────────────────────────────────────────────────
-const ACTION_ICON = { select: '▼', type: '✎', click: '↵', press_enter: '⏎', key: '⌨' };
+const ACTION_ICON = { select: '▼', type: '✎', click: '↵', press_enter: '⏎', key: '⌨', check: '☑', uncheck: '☐', select_radio: '🔘' };
 
 function renderWorkflowsList() {
   if (savedWorkflows.length === 0) {
@@ -258,12 +264,20 @@ function renderWorkflowsList() {
     card.className = 'workflow-card';
     const date = new Date(wf.createdAt).toLocaleString();
     const fromLabel = wf.sourceRecordLabel ? `Recorded from: <strong>${esc(wf.sourceRecordLabel)}</strong>` : '';
+    let fromUrl = '';
+    if (wf.sourceUrl) {
+      try {
+        const host = new URL(wf.sourceUrl).hostname;
+        fromUrl = `<div class="workflow-card-url" style="font-size:11px;color:#818cf8;margin:2px 0 4px;">🌐 ${esc(host)}</div>`;
+      } catch (_) {}
+    }
     card.innerHTML = `
       <div class="workflow-card-header">
         <span class="workflow-card-name">${esc(wf.name)}</span>
         <span class="workflow-card-meta">${esc(date)}</span>
       </div>
       ${fromLabel ? `<div class="workflow-card-from">${fromLabel}</div>` : ''}
+      ${fromUrl}
       <div class="workflow-card-steps">${wf.steps.length} step${wf.steps.length !== 1 ? 's' : ''}</div>
       <div class="workflow-card-actions">
         <button class="btn btn-primary btn-sm" data-action="select" data-id="${esc(wf.id)}">▶ Use</button>
@@ -387,6 +401,22 @@ btnStartReplay.addEventListener('click', async () => {
   btnCancelReplay.classList.remove('hidden');
 
   try {
+    const tab = await getActiveTab();
+    if (selectedWorkflow.sourceUrl && tab && tab.url) {
+      try {
+        const currentUrl = new URL(tab.url);
+        const sourceUrl = new URL(selectedWorkflow.sourceUrl);
+        if (tab.url.startsWith('chrome://') || tab.url === 'about:blank' || currentUrl.origin !== sourceUrl.origin) {
+          const runId = 'run_' + Date.now();
+          activeRunId = runId;
+          await chrome.storage.local.set({
+            replay_active_run: { runId, workflow: selectedWorkflow }
+          });
+          await chrome.tabs.update(tab.id, { url: selectedWorkflow.sourceUrl });
+          return;
+        }
+      } catch (_) {}
+    }
     await sendToContent({ type: 'START_REPLAY', workflow: selectedWorkflow });
   } catch (e) {
     showReplayError(`Could not start replay: ${e.message}`);
