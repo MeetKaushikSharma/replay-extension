@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RePlay</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <span id="header-title">RePlay</span>
+      <span id="rec-indicator" class="hidden">● REC</span>
+      <span id="current-record" class="muted">No record open</span>
+    </header>
+
+    <!-- Tabs -->
+    <nav id="tabs">
+      <button class="tab active" data-tab="record">Record</button>
+      <button class="tab" data-tab="workflows">Workflows</button>
+      <button class="tab" data-tab="replay">Replay</button>
+    </nav>
+
+    <!-- ── RECORD TAB ── -->
+    <section id="tab-record" class="tab-panel active">
+      <div id="record-controls">
+        <button id="btn-start-rec" class="btn btn-primary">▶ Start Recording</button>
+        <button id="btn-stop-rec" class="btn btn-danger hidden">■ Stop Recording</button>
+      </div>
+      <div id="workflow-name-form" class="hidden">
+        <label for="workflow-name-input">Workflow name:</label>
+        <input type="text" id="workflow-name-input" value="Set status and note" maxlength="80" />
+        <button id="btn-save-workflow" class="btn btn-success">Save Workflow</button>
+        <button id="btn-discard-workflow" class="btn btn-ghost">Discard</button>
+      </div>
+      <div id="warnings-container"></div>
+      <div id="live-steps">
+        <p class="muted" id="no-steps-msg">Steps will appear here as you interact with the page.</p>
+        <ol id="steps-list"></ol>
+      </div>
+    </section>
+
+    <!-- ── WORKFLOWS TAB ── -->
+    <section id="tab-workflows" class="tab-panel hidden">
+      <div id="workflows-toolbar">
+        <button id="btn-reset-demo" class="btn btn-ghost btn-sm">↺ Reset Demo Data</button>
+      </div>
+      <div id="workflows-list">
+        <p class="muted">No workflows saved yet.</p>
+      </div>
+    </section>
+
+    <!-- ── REPLAY TAB ── -->
+    <section id="tab-replay" class="tab-panel hidden">
+      <div id="replay-workflow-info">
+        <p class="muted" id="no-workflow-selected">Select a workflow from the Workflows tab first.</p>
+        <div id="selected-workflow-info" class="hidden">
+          <div class="info-row"><span class="label">Workflow:</span> <span id="rp-workflow-name"></span></div>
+          <div class="info-row"><span class="label">Steps:</span> <span id="rp-step-count"></span></div>
+          <div class="info-row"><span class="label">Target record:</span> <span id="rp-target-record" class="badge-info">—</span></div>
+        </div>
+      </div>
+
+      <div id="replay-controls">
+        <button id="btn-start-replay" class="btn btn-primary" disabled>▶ Replay</button>
+        <button id="btn-cancel-replay" class="btn btn-danger hidden">✕ Cancel</button>
+        <button id="btn-verify" class="btn btn-secondary hidden">✓ Verify</button>
+        <button id="btn-retry" class="btn btn-warning hidden">↺ Retry</button>
+      </div>
+
+      <!-- Confirmation dialog -->
+      <div id="confirm-dialog" class="dialog hidden">
+        <p id="confirm-msg"></p>
+        <div class="dialog-buttons">
+          <button id="btn-confirm-yes" class="btn btn-success">✓ Confirm</button>
+          <button id="btn-confirm-no" class="btn btn-danger">✕ Cancel</button>
+        </div>
+      </div>
+
+      <!-- Timeline -->
+      <div id="timeline">
+        <h3>Steps</h3>
+        <ol id="timeline-list"></ol>
+      </div>
+
+      <!-- Verification results -->
+      <div id="verify-results" class="hidden">
+        <h3>Verification</h3>
+        <div id="verify-overall"></div>
+        <table id="verify-table">
+          <thead><tr><th>Field</th><th>Expected</th><th>Observed</th><th>Status</th></tr></thead>
+          <tbody id="verify-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Error message -->
+      <div id="replay-error" class="hidden alert-error"></div>
+    </section>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

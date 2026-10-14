@@ -1,0 +1,191 @@
+/* sidepanel.css – RePlay side panel styles */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  background: #0f0f0f;
+  color: #e0e0e0;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ── Header ── */
+header#header {
+  background: #1a1a2e;
+  border-bottom: 1px solid #2d2d5e;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#header-title { font-weight: 700; color: #7c7cff; font-size: 14px; }
+#rec-indicator {
+  background: #e53e3e; color: white; font-size: 11px; font-weight: bold;
+  padding: 2px 7px; border-radius: 3px; animation: blink 1s infinite;
+}
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+#current-record { margin-left: auto; color: #888; font-size: 11px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Tabs ── */
+#tabs {
+  display: flex;
+  background: #161625;
+  border-bottom: 1px solid #2d2d5e;
+  flex-shrink: 0;
+}
+.tab {
+  flex: 1; padding: 8px 4px; border: none; background: none;
+  color: #888; cursor: pointer; font-size: 12px; font-weight: 500;
+  border-bottom: 2px solid transparent; transition: all .15s;
+}
+.tab:hover { color: #ccc; }
+.tab.active { color: #7c7cff; border-bottom-color: #7c7cff; }
+
+/* ── Tab panels ── */
+.tab-panel { display: none; flex-direction: column; overflow-y: auto; padding: 10px; flex: 1; }
+.tab-panel.active { display: flex; }
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 4px; padding: 6px 12px; border-radius: 5px; border: none;
+  cursor: pointer; font-size: 12px; font-weight: 600; transition: all .15s;
+}
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn-primary { background: #4f46e5; color: white; }
+.btn-primary:hover:not(:disabled) { background: #4338ca; }
+.btn-danger  { background: #e53e3e; color: white; }
+.btn-danger:hover:not(:disabled)  { background: #c53030; }
+.btn-success { background: #2f855a; color: white; }
+.btn-success:hover:not(:disabled) { background: #276749; }
+.btn-secondary { background: #2d3748; color: #e2e8f0; border: 1px solid #4a5568; }
+.btn-secondary:hover:not(:disabled) { background: #4a5568; }
+.btn-warning  { background: #d97706; color: white; }
+.btn-warning:hover:not(:disabled)  { background: #b45309; }
+.btn-ghost { background: transparent; color: #888; border: 1px solid #333; }
+.btn-ghost:hover:not(:disabled) { background: #1e1e2e; color: #ccc; }
+.btn-sm { font-size: 11px; padding: 4px 8px; }
+
+/* ── Record tab ── */
+#record-controls { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+
+#workflow-name-form {
+  background: #1e1e2e; border: 1px solid #2d2d5e; border-radius: 6px;
+  padding: 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px;
+}
+#workflow-name-form label { font-size: 11px; color: #888; }
+#workflow-name-input {
+  background: #0f0f1e; border: 1px solid #4a4a8e; color: #e0e0e0;
+  padding: 6px 8px; border-radius: 4px; font-size: 12px; width: 100%;
+}
+#workflow-name-form .btn { align-self: flex-start; }
+
+#warnings-container { margin-bottom: 6px; }
+.warning-msg {
+  background: #7c4a00; color: #ffd27f; font-size: 11px;
+  padding: 5px 8px; border-radius: 4px; margin-bottom: 4px;
+}
+
+#live-steps h3 { font-size: 12px; color: #888; margin-bottom: 6px; }
+#no-steps-msg { color: #555; font-size: 12px; margin-top: 20px; text-align: center; }
+#steps-list { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+#steps-list li {
+  background: #1a1a2e; border-left: 3px solid #4f46e5;
+  padding: 5px 8px; border-radius: 0 4px 4px 0; font-size: 11px; color: #b0b8cc;
+}
+
+/* ── Workflows tab ── */
+#workflows-toolbar { margin-bottom: 10px; }
+#workflows-list { display: flex; flex-direction: column; gap: 8px; }
+
+.workflow-card {
+  background: #1a1a2e; border: 1px solid #2d2d5e; border-radius: 6px;
+  padding: 10px;
+}
+.workflow-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.workflow-card-name { font-weight: 600; color: #a0a8e0; flex: 1; }
+.workflow-card-meta { font-size: 10px; color: #555; }
+.workflow-card-steps { font-size: 11px; color: #666; margin-bottom: 8px; }
+.workflow-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ── Replay tab ── */
+#replay-workflow-info {
+  background: #1a1a2e; border: 1px solid #2d2d5e; border-radius: 6px;
+  padding: 10px; margin-bottom: 10px;
+}
+.info-row { display: flex; gap: 6px; font-size: 11px; margin-bottom: 3px; }
+.info-row .label { color: #888; min-width: 80px; }
+.badge-info { background: #2d3748; color: #81e6d9; padding: 1px 6px; border-radius: 3px; }
+
+#replay-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+
+/* Confirmation dialog */
+.dialog {
+  background: #1e1e3e; border: 1px solid #4a4a8e; border-radius: 6px;
+  padding: 12px; margin-bottom: 10px;
+}
+.dialog p { margin-bottom: 8px; font-size: 12px; line-height: 1.5; }
+.dialog-buttons { display: flex; gap: 8px; }
+
+/* Timeline */
+#timeline h3 { font-size: 12px; color: #888; margin-bottom: 6px; }
+#timeline-list { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.timeline-item {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 5px 8px; border-radius: 4px; font-size: 11px;
+  background: #161625;
+}
+.timeline-icon { font-size: 12px; min-width: 16px; }
+.timeline-label { flex: 1; color: #b0b8cc; }
+.timeline-status { font-size: 10px; font-weight: 600; }
+
+.status-pending  .timeline-status { color: #888; }
+.status-running  { background: #1e2e3e; }
+.status-running  .timeline-status { color: #63b3ed; }
+.status-success  .timeline-status { color: #68d391; }
+.status-failed   { background: #2e1e1e; }
+.status-failed   .timeline-status { color: #fc8181; }
+.status-skipped  .timeline-status { color: #a0aec0; }
+
+.timeline-detail { font-size: 10px; color: #e53e3e; margin-top: 2px; }
+
+/* Verify results */
+#verify-results { margin-top: 10px; }
+#verify-results h3 { font-size: 12px; color: #888; margin-bottom: 6px; }
+#verify-overall {
+  font-size: 13px; font-weight: 700; padding: 6px 10px;
+  border-radius: 4px; margin-bottom: 8px; text-align: center;
+}
+.overall-success { background: #1a3e2a; color: #68d391; }
+.overall-failed  { background: #3e1a1a; color: #fc8181; }
+.overall-unverified { background: #3e3a1a; color: #fbd38d; }
+
+#verify-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+#verify-table th { background: #1a1a2e; color: #888; padding: 4px 6px; text-align: left; border-bottom: 1px solid #2d2d5e; }
+#verify-table td { padding: 4px 6px; border-bottom: 1px solid #1a1a2e; color: #b0b8cc; }
+.td-success { color: #68d391; }
+.td-failed  { color: #fc8181; }
+.td-unverified { color: #fbd38d; }
+
+/* Error alert */
+.alert-error {
+  background: #3e1a1a; border: 1px solid #e53e3e; border-radius: 6px;
+  padding: 10px; color: #fc8181; font-size: 12px; margin-top: 8px;
+  line-height: 1.5;
+}
+
+/* Misc */
+.hidden { display: none !important; }
+.muted { color: #555; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: #0f0f0f; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
