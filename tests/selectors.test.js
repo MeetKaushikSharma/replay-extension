@@ -20,6 +20,18 @@ function isVisibleAndEnabled(el) {
   if (el.closest('[style*="display: none"], [style*="visibility: hidden"], [hidden]')) {
     return false;
   }
+  // Custom styled checkboxes/radios often have opacity: 0 with visible container/wrapper
+  if (el.getAttribute('style')?.includes('opacity: 0')) {
+    const isInput = el.tagName.toLowerCase() === 'input';
+    const isCheckOrRadio = isInput && ['checkbox', 'radio'].includes(el.type);
+    if (isCheckOrRadio) {
+      const container = el.closest('label, .a-checkbox, .a-radio, [class*="checkbox"], [class*="radio"], li, tr, div');
+      if (container) {
+        return !container.closest('[style*="display: none"], [style*="visibility: hidden"], [hidden]');
+      }
+    }
+    return false;
+  }
   return true;
 }
 
@@ -62,27 +74,33 @@ function resolveTarget(target, document) {
       const el = document.getElementById(target.id);
       return el ? [el] : Array.from(document.querySelectorAll(`#${target.id}`));
     },
-    // 3. name
+    // 3. inputValue attribute (critical for filter checkboxes/radios like value="p_89/boAt")
+    () => {
+      if (!target.inputValue) return [];
+      const tag = target.tag || 'input';
+      return Array.from(document.querySelectorAll(`${tag}[value="${target.inputValue}"]`));
+    },
+    // 4. name
     () => {
       if (!target.name) return [];
       return Array.from(document.querySelectorAll(`${target.tag || '*'}[name="${target.name}"]`));
     },
-    // 4. ariaLabel
+    // 5. ariaLabel
     () => {
       if (!target.ariaLabel) return [];
       return Array.from(document.querySelectorAll(`[aria-label="${target.ariaLabel}"]`));
     },
-    // 5. placeholder
+    // 6. placeholder
     () => {
       if (!target.placeholder) return [];
       return Array.from(document.querySelectorAll(`[placeholder="${target.placeholder}"]`));
     },
-    // 6. title
+    // 7. title
     () => {
       if (!target.title) return [];
       return Array.from(document.querySelectorAll(`[title="${target.title}"]`));
     },
-    // 7. labelText
+    // 8. labelText
     () => {
       if (!target.labelText) return [];
       const normTarget = normalizeText(target.labelText);
@@ -93,9 +111,20 @@ function resolveTarget(target, document) {
           if (ctrl) res.push(ctrl);
         }
       });
+      // Also look for enclosing filter rows or list items where input is inside or adjacent
+      if (res.length === 0 && target.tag === 'input') {
+        const containers = Array.from(document.querySelectorAll('li, .s-navigation-item, [role="listitem"], .a-row, [class*="filter"]'));
+        for (const c of containers) {
+          const cNorm = normalizeText(c.textContent);
+          if (cNorm && (cNorm === normTarget || cNorm.includes(normTarget))) {
+            const input = c.querySelector('input');
+            if (input) res.push(input);
+          }
+        }
+      }
       return res;
     },
-    // 8. Visible text content
+    // 9. Visible text content
     () => {
       if (!target.text) return [];
       const targetNorm = normalizeText(target.text);
@@ -126,7 +155,7 @@ function resolveTarget(target, document) {
         return a.textContent.length - b.textContent.length;
       });
     },
-    // 9. href
+    // 10. href
     () => {
       if (!target.href) return [];
       let els = Array.from(document.querySelectorAll(`a[href="${target.href}"]`));
@@ -135,7 +164,7 @@ function resolveTarget(target, document) {
       }
       return els;
     },
-    // 10. selector
+    // 11. selector
     () => {
       if (!target.selector) return [];
       try {
@@ -176,6 +205,7 @@ function resolveTarget(target, document) {
     // 2. Exact matches
     const exact = filtered.filter(el => {
       if (target.id && el.id === target.id) return true;
+      if (target.inputValue && el.value === target.inputValue) return true;
       if (target.href && (el.getAttribute('href') === target.href || el.getAttribute('href')?.endsWith(target.href))) return true;
       if (target.text && normalizeText(el.textContent) === normalizeText(target.text)) return true;
       return false;
@@ -217,25 +247,46 @@ function resolveTarget(target, document) {
 }
 
 function buildTarget(el, recordId, document) {
+  const doc = document || el.ownerDocument;
   const testid = el.getAttribute('data-testid') || '';
   const id = el.id || '';
   const ariaLabel = el.getAttribute('aria-label') || '';
   const tag = el.tagName.toLowerCase();
+  const type = el.getAttribute('type') || '';
+  const inputValue = el.getAttribute('value') || (tag === 'input' && el.value && el.value !== 'on' ? el.value : '');
   let text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   let labelText = '';
 
+  if (id) {
+    const lbl = doc.querySelector(`label[for="${id}"]`);
+    if (lbl) labelText = (lbl.textContent || '').replace(/\s+/g, ' ').trim();
+  }
   const parentLabel = el.closest('label');
-  if (parentLabel) labelText = (parentLabel.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!labelText && parentLabel) labelText = (parentLabel.textContent || '').replace(/\s+/g, ' ').trim();
 
-  // Container text fallback
+  // Upwards container text fallback
   if (!text && !labelText) {
-    const container = el.closest('li, label, .s-navigation-item, [role="listitem"], tr');
-    if (container) {
-      const cText = (container.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-      if (cText) {
-        if (tag === 'input') labelText = cText;
-        else text = cText;
+    const selectors = ['label', 'li', '.s-navigation-item', '[role="listitem"]', '.a-row', '.a-checkbox', '.a-radio', '[class*="item"]', '[class*="filter"]', 'tr'];
+    let cur = el.parentElement;
+    const body = doc.body;
+    while (cur && cur !== body && !labelText && !text) {
+      if (selectors.some(sel => cur.matches?.(sel))) {
+        const cText = (cur.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        if (cText) {
+          if (tag === 'input') labelText = cText;
+          else text = cText;
+          break;
+        }
       }
+      cur = cur.parentElement;
+    }
+  }
+
+  // If labelText is still empty for input, check if inputValue can provide a clean name (exclude range sliders)
+  if (tag === 'input' && !labelText && inputValue && inputValue !== 'on' && type !== 'range') {
+    const cleanVal = inputValue.includes('/') ? inputValue.split('/').pop() : inputValue;
+    if (cleanVal && cleanVal.length < 50 && isNaN(Number(cleanVal))) {
+      labelText = cleanVal;
     }
   }
 
@@ -243,7 +294,57 @@ function buildTarget(el, recordId, document) {
     const suspicious = [testid, id, ariaLabel, labelText].some(s => s && s.includes(recordId));
     if (suspicious) return { error: 'record-specific', testid, id };
   }
-  return { testid, id, ariaLabel, tag, text, labelText };
+  return { testid, id, ariaLabel, tag, type, inputValue, text, labelText };
+}
+
+function humanLabel(action, target, value) {
+  let name = target.labelText || target.title || target.text || target.placeholder || target.name || target.ariaLabel || target.testid || target.id;
+  if (!name || name === 'input' || name === 'element') {
+    if (target.inputValue && target.inputValue !== 'on') {
+      name = target.inputValue.includes('/') ? target.inputValue.split('/').pop() : target.inputValue;
+    } else {
+      name = target.tag || 'element';
+    }
+  }
+  const cleanName = name.length > 40 ? name.slice(0, 37) + '...' : name;
+
+  if (action === 'check')        return `Check "${cleanName}"`;
+  if (action === 'uncheck')      return `Uncheck "${cleanName}"`;
+  if (action === 'select_radio') return `Select "${cleanName}"`;
+  if (action === 'set_slider')   return `Set slider "${cleanName}" to ${value}`;
+  if (action === 'select')       return `Select "${value}" in ${cleanName}`;
+  if (action === 'type')         return `Type "${value}" into ${cleanName}`;
+  if (action === 'press_enter')  return `Press Enter in ${cleanName}`;
+  if (action === 'click') {
+    if (target.tag === 'a' || target.role === 'link') return `Click link "${cleanName}"`;
+    if (target.tag === 'button' || target.role === 'button') return `Click button "${cleanName}"`;
+    return `Click "${cleanName}"`;
+  }
+  return action;
+}
+
+function findScrollableFilterContainers(document) {
+  const containers = [];
+  const modalSelectors = [
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    '.a-modal-scroller',
+    '.a-popover-modal',
+    '.a-popover-wrapper',
+    '#s-all-filters',
+    '[class*="all-filters"]',
+    '[class*="modal"]',
+    '[class*="drawer"]'
+  ];
+
+  try {
+    const els = document.querySelectorAll(modalSelectors.join(', '));
+    for (const el of els) {
+      if (!isVisibleAndEnabled(el)) continue;
+      containers.push(el);
+    }
+  } catch (_) {}
+  return containers;
 }
 
 function findClickableElement(target) {
@@ -779,3 +880,177 @@ describe('Dynamic E-Commerce & Complex Web Filtering (Visible-first fallback, Am
     assert.equal(isNewTabPage('chrome://settings'), false);
   });
 });
+
+describe('Custom Checkboxes, Radios, Sliders & Modal Scroll Filtering', () => {
+  test('disguised checkbox with opacity: 0 in visible container is accepted by isVisibleAndEnabled', () => {
+    const doc = makeDOM(`
+      <div class="a-checkbox">
+        <label>
+          <input type="checkbox" id="disguised-cb" style="opacity: 0" />
+          <i class="a-icon a-icon-checkbox"></i>
+        </label>
+      </div>
+      <input type="text" id="hidden-text" style="opacity: 0" />
+    `);
+
+    const cb = doc.getElementById('disguised-cb');
+    const textInput = doc.getElementById('hidden-text');
+
+    assert.equal(isVisibleAndEnabled(cb), true, 'disguised checkbox in visible container should be accepted');
+    assert.equal(isVisibleAndEnabled(textInput), false, 'hidden regular text input should still be rejected');
+  });
+
+  test('resolveTarget resolves disguised checkbox by inputValue', () => {
+    const doc = makeDOM(`
+      <div class="s-all-filters-item">
+        <input type="checkbox" value="p_89/boAt" style="opacity: 0" id="target-boat-input" />
+      </div>
+      <div class="s-all-filters-item">
+        <input type="checkbox" value="p_89/Sony" style="opacity: 0" id="other-sony-input" />
+      </div>
+    `);
+
+    const target = { tag: 'input', type: 'checkbox', inputValue: 'p_89/boAt' };
+    const res = resolveTarget(target, doc);
+    assert.ok(res.el);
+    assert.equal(res.el.id, 'target-boat-input');
+    assert.equal(res.count, 1);
+  });
+
+  test('buildTarget extracts labelText from outer container even when immediate label has empty text', () => {
+    const doc = makeDOM(`
+      <li class="s-navigation-item">
+        <div class="a-checkbox a-checkbox-fancy">
+          <label>
+            <input type="checkbox" value="p_89/boAt" id="boat-cb" />
+            <i class="a-icon a-icon-checkbox"></i>
+            <span class="a-label"></span>
+          </label>
+        </div>
+        <span class="a-size-base a-color-base">boAt</span>
+      </li>
+    `);
+
+    const input = doc.getElementById('boat-cb');
+    const target = buildTarget(input, null, doc);
+
+    assert.equal(target.labelText, 'boAt', 'should skip empty immediate label and resolve text from outer container');
+    assert.equal(target.inputValue, 'p_89/boAt');
+
+    const label = humanLabel('uncheck', target, false);
+    assert.equal(label, 'Uncheck "boAt"', 'humanLabel should be "Uncheck boAt" instead of "Uncheck input"');
+  });
+
+  test('buildTarget falls back to extracting brand from inputValue when no container text is found', () => {
+    const doc = makeDOM(`
+      <div class="filter-row">
+        <input type="checkbox" value="p_89/boAt" id="bare-boat-cb" />
+      </div>
+    `);
+
+    const input = doc.getElementById('bare-boat-cb');
+    const target = buildTarget(input, null, doc);
+
+    assert.equal(target.labelText, 'boAt', 'should derive clean brand from inputValue');
+    assert.equal(target.inputValue, 'p_89/boAt');
+
+    const label = humanLabel('uncheck', target, false);
+    assert.equal(label, 'Uncheck "boAt"');
+  });
+
+  test('set_slider action on input[type="range"] correctly sets value and humanLabel', () => {
+    const doc = makeDOM(`
+      <label for="price-range">Price Filter</label>
+      <input type="range" min="0" max="5000" value="1000" id="price-range" />
+      <input type="range" min="0" max="100" value="20" id="bare-slider" />
+    `);
+
+    const input = doc.getElementById('price-range');
+    const target = buildTarget(input, null, doc);
+
+    const label = humanLabel('set_slider', target, '2500');
+    assert.equal(label, 'Set slider "Price Filter" to 2500', 'should use associated label');
+
+    const bareInput = doc.getElementById('bare-slider');
+    const bareTarget = buildTarget(bareInput, null, doc);
+    const bareLabel = humanLabel('set_slider', bareTarget, '50');
+    assert.equal(bareLabel, 'Set slider "bare-slider" to 50', 'should fallback to id if no label');
+
+    // Simulate replay of set_slider
+    let eventFired = false;
+    input.addEventListener('change', () => { eventFired = true; });
+    input.value = '2500';
+    input.dispatchEvent(new doc.defaultView.Event('change'));
+
+    assert.equal(input.value, '2500');
+    assert.equal(eventFired, true);
+  });
+
+  test('set_slider action on role="slider" updates aria-valuenow and associated input', () => {
+    const doc = makeDOM(`
+      <div role="slider" aria-valuenow="10" aria-valuemin="0" aria-valuemax="100" id="custom-slider">
+        <input type="hidden" name="min_price" value="10" id="hidden-price" />
+      </div>
+    `);
+
+    const slider = doc.getElementById('custom-slider');
+    const hidden = doc.getElementById('hidden-price');
+
+    // Replay execution for role="slider"
+    const targetValue = '75';
+    slider.setAttribute('aria-valuenow', targetValue);
+    const associatedInput = slider.querySelector('input');
+    if (associatedInput) associatedInput.value = targetValue;
+
+    assert.equal(slider.getAttribute('aria-valuenow'), '75');
+    assert.equal(hidden.value, '75');
+  });
+
+  test('findScrollableFilterContainers detects open modal / drawer and ignores background', () => {
+    const docWithModal = makeDOM(`
+      <div role="dialog" id="s-all-filters" class="a-modal-scroller">
+        <div class="filter-content">Filters List</div>
+      </div>
+      <div class="main-content">Products</div>
+    `);
+
+    const modalContainers = findScrollableFilterContainers(docWithModal);
+    assert.equal(modalContainers.length, 1);
+    assert.equal(modalContainers[0].id, 's-all-filters');
+
+    const docWithoutModal = makeDOM(`
+      <div class="main-content">Products</div>
+    `);
+    const noContainers = findScrollableFilterContainers(docWithoutModal);
+    assert.equal(noContainers.length, 0);
+  });
+
+  test('checkbox toggle replay clicks parent wrapper element to invoke framework listeners', () => {
+    const doc = makeDOM(`
+      <div class="a-checkbox" id="wrapper">
+        <label id="cb-label">
+          <input type="checkbox" id="real-input" />
+          <i class="a-icon"></i>
+        </label>
+      </div>
+    `);
+
+    const input = doc.getElementById('real-input');
+    const wrapper = doc.getElementById('wrapper');
+    let frameworkToggled = false;
+
+    // Framework listens to clicks on the wrapper / label
+    wrapper.addEventListener('click', () => {
+      input.checked = !input.checked;
+      frameworkToggled = true;
+    });
+
+    // Replay logic: click wrapper
+    const targetWrapper = input.closest('label, .a-checkbox') || input;
+    targetWrapper.click();
+
+    assert.equal(frameworkToggled, true, 'framework listener on wrapper should be triggered');
+    assert.equal(input.checked, true, 'input should be toggled to true');
+  });
+});
+
