@@ -135,14 +135,16 @@ function resolveTarget(target) {
   }
   if (target.role) {
     const actualRole = el.getAttribute('role') || implicitRole(el);
-    if (actualRole !== target.role) {
+    const isTextInput = (r) => ['textbox', 'combobox', 'searchbox'].includes(r);
+    const compatible = actualRole === target.role || (isTextInput(actualRole) && isTextInput(target.role));
+    if (!compatible) {
       return { el: null, count: 1, reason: 'target changed (role drifted)' };
     }
   }
   return { el, count: 1 };
 }
 
-function pollForTarget(target, { interval = 100, timeout = 5000 } = {}) {
+function pollForTarget(target, { interval = 100, timeout = 7000 } = {}) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeout;
     function attempt() {
@@ -201,6 +203,16 @@ let _steps = [];
 let _badge = null;
 const _pendingChanges = new Map();    // el → { timer }
 const _lastRecordedValue = new Map(); // el → last value committed to _steps
+let _lastEnterTime = 0;
+let _lastEnterTarget = null;
+
+async function persistRecordingState() {
+  if (_recording) {
+    await chrome.storage.local.set({
+      replay_recording: { active: true, steps: _steps }
+    }).catch(() => {});
+  }
+}
 
 function getCurrentRecordId() {
   const m = location.hash.match(/#\/customers\/([^/?]+)/);
@@ -264,6 +276,13 @@ function handleKeyDown(e) {
     if (!el) return;
     const tag = el.tagName?.toLowerCase();
     if (tag === 'input' || tag === 'textarea') {
+      const now = Date.now();
+      if (now - _lastEnterTime < 500 && _lastEnterTarget === el) {
+        return; // debounce rapid or duplicate Enter events
+      }
+      _lastEnterTime = now;
+      _lastEnterTarget = el;
+
       // Flush pending change first so typing comes before Enter
       if (_pendingChanges.has(el)) {
         clearTimeout(_pendingChanges.get(el).timer);
@@ -285,6 +304,7 @@ function handleKeyDown(e) {
         label: humanLabel('press_enter', target, null)
       };
       _steps.push(step);
+      persistRecordingState();
       notifyPanel({ type: 'STEP_RECORDED', step });
       updateBadgeCount(_steps.length);
     }
@@ -311,6 +331,7 @@ function recordChangeStep(el) {
                  sensitive, consequential: false, label: humanLabel(action, target, value) };
   _steps.push(step);
   if (!sensitive) _lastRecordedValue.set(el, value); // remember so next event deduplicates
+  persistRecordingState();
   notifyPanel({ type: 'STEP_RECORDED', step });
   updateBadgeCount(_steps.length);
 }
@@ -338,6 +359,7 @@ function handleClick(e) {
                  value: null, sensitive: false, consequential: isConsequential(el),
                  label: humanLabel('click', target, null) };
   _steps.push(step);
+  persistRecordingState();
   notifyPanel({ type: 'STEP_RECORDED', step });
   updateBadgeCount(_steps.length);
 }
@@ -362,21 +384,27 @@ function removeBadge() {
   document.getElementById('__replay_badge_wrapper__')?.remove();
 }
 
-function startRecording() {
+function startRecording(existingSteps = []) {
   _recording = true;
-  _steps = [];
+  _steps = Array.isArray(existingSteps) ? [...existingSteps] : [];
   _pendingChanges.clear();
   _lastRecordedValue.clear();
+  _lastEnterTime = 0;
+  _lastEnterTarget = null;
   document.addEventListener('input',   handleInputOrChange, { capture: true });
   document.addEventListener('change',  handleInputOrChange, { capture: true });
   document.addEventListener('keydown', handleKeyDown,       { capture: true });
   document.addEventListener('click',   handleClick,         { capture: true });
   injectBadge();
+  updateBadgeCount(_steps.length);
+  persistRecordingState();
   notifyPanel({ type: 'RECORDING_STARTED' });
 }
 
-function stopRecording() {
+async function stopRecording() {
+  const wasRecording = _recording;
   _recording = false;
+  await chrome.storage.local.remove('replay_recording').catch(() => {});
   document.removeEventListener('input',   handleInputOrChange, { capture: true });
   document.removeEventListener('change',  handleInputOrChange, { capture: true });
   document.removeEventListener('keydown', handleKeyDown,       { capture: true });
@@ -388,8 +416,10 @@ function stopRecording() {
     || document.title?.trim()
     || location.hostname;
   const steps = [..._steps];
-  notifyPanel({ type: 'RECORDING_STOPPED', steps, sourceRecordLabel: recordName });
-  return { steps, sourceRecordLabel: recordName };
+  if (wasRecording) {
+    notifyPanel({ type: 'RECORDING_STOPPED', steps, sourceRecordLabel: recordName });
+  }
+  return { steps, sourceRecordLabel: recordName, wasRecording };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -450,7 +480,7 @@ async function preflight(steps) {
       continue;
     }
 
-    try { await pollForTarget(step.target, { timeout: 3000 }); }
+    try { await pollForTarget(step.target, { timeout: 6000 }); }
     catch (err) { return { ok: false, failedStep: step, reason: err.reason || 'missing' }; }
 
     if (step.action === 'press_enter' || step.action === 'click') {
@@ -479,6 +509,10 @@ async function startReplay(workflow, resumeRunId) {
   }
 
   _activeRun = { runId, workflow, completedStepIds, cancelled: false };
+  await chrome.storage.local.set({
+    replay_active_run: { runId, workflow }
+  }).catch(() => {});
+
   const targetName = document.querySelector('[data-testid="record-name"]')?.textContent?.trim()
     || document.title?.trim()
     || location.hostname;
@@ -491,6 +525,7 @@ async function startReplay(workflow, resumeRunId) {
     sendStepStatus(runId, pre.failedStep.id, 'failed', pre.reason);
     notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: `Preflight: step "${pre.failedStep.label}" – ${pre.reason}` });
     _activeRun = null;
+    await chrome.storage.local.remove('replay_active_run').catch(() => {});
     return;
   }
 
@@ -507,6 +542,7 @@ async function startReplay(workflow, resumeRunId) {
         sendStepStatus(runId, step.id, 'failed', 'cancelled by user');
         notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: 'Cancelled before consequential step' });
         _activeRun = null;
+        await chrome.storage.local.remove('replay_active_run').catch(() => {});
         return;
       }
     }
@@ -520,6 +556,7 @@ async function startReplay(workflow, resumeRunId) {
       notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: `"${step.label}" – ${err.reason || 'missing'}` });
       await saveRunState(runId, workflow.id, [...completedStepIds]);
       _activeRun = null;
+      await chrome.storage.local.remove('replay_active_run').catch(() => {});
       return;
     }
 
@@ -533,6 +570,11 @@ async function startReplay(workflow, resumeRunId) {
         }
       } else if (step.action === 'press_enter' || step.action === 'key') {
         try { el.focus(); } catch (_) {}
+        // Persist step completion BEFORE form submission/navigation might terminate the script
+        completedStepIds.add(step.id);
+        await saveRunState(runId, workflow.id, [...completedStepIds]);
+        sendStepStatus(runId, step.id, 'success', null);
+
         el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
         el.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
         el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
@@ -540,18 +582,29 @@ async function startReplay(workflow, resumeRunId) {
           try { el.form.requestSubmit(); } catch (_) { try { el.form.submit(); } catch (_) {} }
         }
         await new Promise(r => setTimeout(r, 600));
+        continue;
       } else if (step.action === 'click') {
         try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
         await new Promise(r => setTimeout(r, 100));
+
+        const isNavClick = el.tagName.toLowerCase() === 'a' || el.type === 'submit' || el.getAttribute('type') === 'submit';
+        if (isNavClick) {
+          completedStepIds.add(step.id);
+          await saveRunState(runId, workflow.id, [...completedStepIds]);
+          sendStepStatus(runId, step.id, 'success', null);
+        }
+
         el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
         el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
         el.click();
         await new Promise(r => setTimeout(r, 350));
+        if (isNavClick) continue;
       }
     } catch (err) {
       sendStepStatus(runId, step.id, 'failed', err.message);
       notifyPanel({ type: 'REPLAY_STOPPED', runId, reason: `"${step.label}" error: ${err.message}` });
       _activeRun = null;
+      await chrome.storage.local.remove('replay_active_run').catch(() => {});
       return;
     }
 
@@ -560,13 +613,17 @@ async function startReplay(workflow, resumeRunId) {
     sendStepStatus(runId, step.id, 'success', null);
   }
 
+  await chrome.storage.local.remove('replay_active_run').catch(() => {});
   if (_activeRun && !_activeRun.cancelled) {
     notifyPanel({ type: 'REPLAY_COMPLETE', runId });
   }
   _activeRun = null;
 }
 
-function cancelReplay() { if (_activeRun) _activeRun.cancelled = true; }
+function cancelReplay() {
+  if (_activeRun) _activeRun.cancelled = true;
+  chrome.storage.local.remove('replay_active_run').catch(() => {});
+}
 
 // ═══════════════════════════════════════════════════════════
 // MODULE: verifier.js
@@ -722,10 +779,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: true });
           break;
 
-        case 'STOP_RECORDING':
-          if (!_recording) { sendResponse({ error: 'Not recording' }); return; }
-          sendResponse({ ok: true, ...stopRecording() });
+        case 'STOP_RECORDING': {
+          const res = await stopRecording();
+          sendResponse({ ok: true, ...res });
           break;
+        }
 
         case 'START_REPLAY': {
           const m2 = location.hash.match(/#\/customers\/([^/?]+)/);
@@ -787,7 +845,21 @@ function registerTab() {
     .catch(() => {});
 }
 registerTab();
-document.addEventListener('visibilitychange', () => { if (!document.hidden) registerTab(); });
+async function initSession() {
+  try {
+    const data = await chrome.storage.local.get(['replay_recording', 'replay_active_run']);
+    if (data.replay_recording?.active) {
+      console.log('[RePlay] Active recording detected across navigation, resuming on', location.href);
+      startRecording(data.replay_recording.steps || []);
+    } else if (data.replay_active_run?.runId && data.replay_active_run?.workflow) {
+      console.log('[RePlay] Active replay detected across navigation, resuming on', location.href);
+      setTimeout(() => {
+        startReplay(data.replay_active_run.workflow, data.replay_active_run.runId).catch(console.error);
+      }, 700);
+    }
+  } catch (_) {}
+}
+initSession();
 
 console.log('[RePlay] content script ready on', location.href);
 })();

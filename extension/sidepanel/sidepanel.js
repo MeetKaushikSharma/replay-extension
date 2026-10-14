@@ -91,25 +91,36 @@ async function saveWorkflows() {
 async function getActiveTab() {
   try {
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (tabs && tabs[0]) return tabs[0];
+    if (tabs && tabs.length > 0 && tabs[0].id) return tabs[0];
   } catch (_) {}
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs && tabs[0]) return tabs[0];
+    if (tabs && tabs.length > 0 && tabs[0].id) return tabs[0];
+  } catch (_) {}
+  try {
+    const tabs = await chrome.tabs.query({ active: true });
+    if (tabs && tabs.length > 0 && tabs[0].id) return tabs[0];
   } catch (_) {}
   return null;
 }
 
 async function injectContentScript(tabId) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'INJECT_CONTENT', tabId }, (resp) => {
-      if (chrome.runtime.lastError || resp?.error) {
-        reject(new Error(resp?.error || chrome.runtime.lastError?.message));
-      } else {
-        resolve();
-      }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      files: ['content/content.js']
     });
-  });
+  } catch (_) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: 'INJECT_CONTENT', tabId }, (resp) => {
+        if (chrome.runtime.lastError || resp?.error) {
+          reject(new Error(resp?.error || chrome.runtime.lastError?.message));
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
 }
 
 async function sendToContent(msg) {
@@ -158,6 +169,9 @@ btnStartRec.addEventListener('click', async () => {
   noStepsMsg.classList.remove('hidden');
 
   try {
+    await chrome.storage.local.set({
+      replay_recording: { active: true, steps: [] }
+    });
     await sendToContent({ type: 'START_RECORDING' });
     recording = true;
     recIndicator.classList.remove('hidden');
@@ -165,43 +179,44 @@ btnStartRec.addEventListener('click', async () => {
     btnStopRec.classList.remove('hidden');
     workflowNameForm.classList.add('hidden');
   } catch (e) {
+    await chrome.storage.local.remove('replay_recording').catch(() => {});
     showError(`Failed to start recording: ${e.message}`);
   }
 });
 
 btnStopRec.addEventListener('click', async () => {
+  await chrome.storage.local.remove('replay_recording').catch(() => {});
+
+  recording = false;
+  recIndicator.classList.add('hidden');
+  btnStartRec.classList.remove('hidden');
+  btnStopRec.classList.add('hidden');
+
+  let result = null;
   try {
-    const result = await sendToContent({ type: 'STOP_RECORDING' });
+    result = await sendToContent({ type: 'STOP_RECORDING' });
+  } catch (_) {
+    // If tab navigated or reloaded, pendingSteps already captured the actions!
+  }
 
-    recording = false;
-    recIndicator.classList.add('hidden');
-    btnStartRec.classList.remove('hidden');
-    btnStopRec.classList.add('hidden');
-
-    // Handle relay errors
-    if (result?.error) {
-      showWarning(`⚠ Stop recording error: ${result.error}. Try reloading the CRM tab.`);
-      return;
+  // Merge any returned steps into pendingSteps (deduped by ID)
+  if (result?.steps && Array.isArray(result.steps)) {
+    for (const step of result.steps) {
+      if (!pendingSteps.some(s => s.id === step.id)) {
+        pendingSteps.push(step);
+      }
     }
+  }
+  if (result?.sourceRecordLabel) {
+    pendingSourceLabel = result.sourceRecordLabel;
+  }
 
-    const steps = result?.steps ?? [];
-    pendingSteps = steps;
-    pendingSourceLabel = result?.sourceRecordLabel || '';
-
-    if (steps.length > 0) {
-      workflowNameForm.classList.remove('hidden');
-      // Scroll into view in case panel is short
-      workflowNameForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    } else {
-      showWarning('⚠ No steps were recorded. Make sure you interact with the CRM form controls while recording.');
-    }
-  } catch (e) {
-    // Reset UI state even on error
-    recording = false;
-    recIndicator.classList.add('hidden');
-    btnStartRec.classList.remove('hidden');
-    btnStopRec.classList.add('hidden');
-    showWarning(`⚠ Could not stop recording: ${e.message}. Reload the CRM tab and try again.`);
+  // Gracefully accept recorded steps even if content script returned an error or transitioned
+  if (pendingSteps.length > 0) {
+    workflowNameForm.classList.remove('hidden');
+    workflowNameForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else {
+    showWarning('⚠ No steps were recorded. Make sure you interact with form controls, buttons, or search fields while recording.');
   }
 });
 
@@ -444,6 +459,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
 
     case 'STEP_RECORDED':
+      if (pendingSteps.some(s => s.id === msg.step.id)) return;
       pendingSteps.push(msg.step);
       noStepsMsg.classList.add('hidden');
       addStepToList(msg.step);

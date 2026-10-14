@@ -56,7 +56,20 @@ function resolveTarget(target, document) {
   const visible = candidates.filter(isVisibleAndEnabled);
   if (visible.length === 0) return { el: null, count: 0, reason: 'missing' };
   if (visible.length > 1) return { el: null, count: visible.length, reason: `ambiguous (${visible.length} matches)` };
-  return { el: visible[0], count: 1 };
+
+  const el = visible[0];
+  if (target.tag && el.tagName.toLowerCase() !== target.tag.toLowerCase()) {
+    return { el: null, count: 1, reason: 'target changed (tag drifted)' };
+  }
+  if (target.role) {
+    const actualRole = el.getAttribute('role') || (el.tagName.toLowerCase() === 'input' ? 'textbox' : '');
+    const isTextInput = (r) => ['textbox', 'combobox', 'searchbox'].includes(r);
+    const compatible = actualRole === target.role || (isTextInput(actualRole) && isTextInput(target.role));
+    if (!compatible) {
+      return { el: null, count: 1, reason: 'target changed (role drifted)' };
+    }
+  }
+  return { el, count: 1 };
 }
 
 function buildTarget(el, recordId, document) {
@@ -298,5 +311,67 @@ describe('Verifier logic', () => {
     const result = makeGenericVerifier(steps, { s1: 'lofi hip hop' });
     assert.equal(result.overall, 'success');
     assert.equal(result.fields.length, 2);
+  });
+});
+
+describe('Cross-Navigation & Deduplication Resilience', () => {
+  test('role tolerance: accepts compatible textbox/combobox on input', () => {
+    const doc = makeDOM('<input id="search" name="q" role="combobox" />');
+    // Recorded with role: 'textbox'
+    const target = { id: 'search', tag: 'input', role: 'textbox' };
+    const res = resolveTarget(target, doc);
+    assert.ok(res.el, 'should find input despite combobox vs textbox difference');
+    assert.equal(res.count, 1);
+  });
+
+  test('role tolerance: rejects incompatible role change', () => {
+    const doc = makeDOM('<button id="search" role="button">Search</button>');
+    const target = { id: 'search', tag: 'button', role: 'textbox' };
+    const res = resolveTarget(target, doc);
+    assert.equal(res.el, null);
+    assert.ok(res.reason.includes('role drifted'));
+  });
+
+  test('Enter throttling: prevents duplicate press_enter within 500ms', () => {
+    let lastEnterTime = 0;
+    let lastEnterTarget = null;
+    const recorded = [];
+
+    function simulateEnter(el, time) {
+      if (time - lastEnterTime < 500 && lastEnterTarget === el) {
+        return false; // suppressed
+      }
+      lastEnterTime = time;
+      lastEnterTarget = el;
+      recorded.push({ action: 'press_enter', time });
+      return true;
+    }
+
+    const input = { id: 'q' };
+    assert.equal(simulateEnter(input, 1000), true);
+    assert.equal(simulateEnter(input, 1200), false, 'should suppress duplicate Enter at 200ms');
+    assert.equal(simulateEnter(input, 1400), false, 'should suppress duplicate Enter at 400ms');
+    assert.equal(simulateEnter(input, 1600), true, 'should allow Enter after 600ms');
+    assert.equal(recorded.length, 2);
+  });
+
+  test('step deduplication: pendingSteps only stores unique step IDs', () => {
+    const pendingSteps = [];
+    function onStepRecorded(step) {
+      if (pendingSteps.some(s => s.id === step.id)) return;
+      pendingSteps.push(step);
+    }
+
+    const step1 = { id: 'step_1', action: 'type', value: 'hello ai' };
+    const step2 = { id: 'step_2', action: 'press_enter', value: 'Enter' };
+
+    // Simulate duplicate delivery from content script + background relay
+    onStepRecorded(step1);
+    onStepRecorded(step2);
+    onStepRecorded(step1); // duplicate
+    onStepRecorded(step2); // duplicate
+
+    assert.equal(pendingSteps.length, 2);
+    assert.deepEqual(pendingSteps.map(s => s.id), ['step_1', 'step_2']);
   });
 });
