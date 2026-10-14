@@ -3,7 +3,7 @@
 ## Setup (do before demo)
 - CRM running: `cd crm-demo && npm run dev` → http://localhost:5173
 - Extension loaded at `chrome://extensions` (Developer mode → Load unpacked → `extension/`)
-- Click ↺ Reset Demo Data on the CRM to ensure all customers are "New" with empty notes
+- Click **↺ Reset Demo Data** on the CRM list page to ensure all customers are "New" with empty notes
 
 ---
 
@@ -12,14 +12,15 @@
 > *"I'll teach RePlay what to do by performing it once on Alice."*
 
 1. Open `http://localhost:5173/#/customers/c1` — shows **Alice Johnson**, Status: New
-2. Click the RePlay icon → side panel opens
-3. **Record tab** → click **▶ Start Recording** — red "● REC" badge appears
-4. Change **Status** to **Follow-up** — side panel shows "Select Follow-up in Status"
-5. Click **Notes** → type `Call next week` — side panel shows "Type into notes-input"
-6. Click **Save** — toast "Saved successfully" appears; side panel shows "Click save-button"
-7. Click **■ Stop Recording** → name it `Set status and note` → **Save Workflow**
+2. Click the RePlay icon → side panel opens; header shows "Alice Johnson"
+3. **Record tab** → click **▶ Start Recording** — red **"● REC (0)"** badge appears on page
+4. Change **Status** to **Follow-up** — badge becomes "● REC (1)"; panel shows `▼ Select "Follow-up" in Status`
+5. Click **Notes** → type `Call next week` — badge becomes "● REC (2)"; panel shows `✎ Type into Notes`
+6. Click **Save** — badge becomes "● REC (3)"; panel shows `↵ Click save-button ⚠`
+7. Click **■ Stop Recording**
+8. Name: `Set status and note` → **Save Workflow** → switches to Workflows tab
 
-> *"Three steps recorded. The workflow is stored locally — no server, no AI."*
+> *"Three steps. The ⚠ marks the Save as a consequential step — it will need your confirmation during replay."*
 
 ---
 
@@ -28,32 +29,29 @@
 > *"Now I'll replay the exact same workflow on Bob — without touching Alice."*
 
 1. Navigate to `http://localhost:5173/#/customers/c2` — **Bob Smith**, Status: New
-2. Side panel → **Workflows** tab → click **▶ Select** on "Set status and note"
-3. Switch to **Replay** tab — shows: Workflow: Set status and note | Target: Bob Smith
+2. Workflows tab → card shows **"Recorded from: Alice Johnson"** · click **🔍 Steps** to inspect
+3. Click **▶ Use** → Replay tab — shows Target: **Bob Smith**
 4. Click **▶ Replay**
-5. Timeline: Select step ✓ → Type step ✓ → Save step (⚠ confirmation dialog)
-6. Click **✓ Confirm** → Save step ✓
-7. Bob's page shows: Status = Follow-up, Notes = "Call next week", Saved values updated
-
-> *"RePlay independently verifies the result."*
-
-8. Click **✓ Verify** → verification table appears:
+5. Timeline: `▼ Select` ✓ → `✎ Type` ✓ → `↵ Click save-button` → confirmation dialog appears:
+   **"About to execute: 'Click save-button'. This is a consequential action. Proceed?"**
+6. Click **✓ Confirm** → Save ✓ → Overall: `REPLAY COMPLETE`
+7. Click **✓ Verify** → verification table:
    - status: Follow-up → **✅ success**
    - notes: Call next week → **✅ success**
-   - saved-status (DOM): **✅ success**
+   - saved-status (DOM) → **✅ success**
+   - saved-notes (DOM) → **✅ success**
    - Overall: **SUCCESS**
 
 ---
 
 ## 3. Replay on Carol (~10 s)
 
-> *"Same workflow, no re-recording. Let's run it on Carol."*
+> *"Same workflow, no re-recording."*
 
 1. Navigate to `http://localhost:5173/#/customers/c3` — **Carol Diaz**
-2. Replay tab → same workflow still selected → click **▶ Replay** → Confirm
-3. Verify → **SUCCESS**
+2. Replay tab → same workflow selected → **▶ Replay** → Confirm → Verify → **SUCCESS**
 
-> *"Same workflow ID, same 3 steps, Carol's data updated. Alice's and Bob's are unchanged."*
+> *"Same 3 steps, Carol updated. Alice and Bob are unchanged — verified by reading localStorage directly."*
 
 ---
 
@@ -62,22 +60,39 @@
 > *"What if someone changes the interface? Watch RePlay stop safely."*
 
 1. Navigate to `http://localhost:5173/#/customers/c2?fault=rename-save`
-2. Red banner: "TEST FAULT ACTIVE: rename-save"
-3. Side panel → Replay tab → click **▶ Replay**
-4. Status ✓, Notes ✓, Save step ✕ — error: `"Step 'Click save-button' failed: missing"`
-5. **No data was changed** — Bob's saved values are unchanged
+2. Red banner: **"⚠ TEST FAULT ACTIVE: rename-save"**
+3. Replay tab → **▶ Replay**
+4. Status ✓, Notes ✓, Save step ✕ — error: `Preflight: step "Click save-button" – missing`
+5. **No data changed** — preflight stopped before touching anything
 6. Click **Restore** on the page → fault removed
-7. Side panel → click **↺ Retry** → Save step executes and succeeds
-8. Verify → **SUCCESS**
+7. Side panel → **↺ Retry** → resumes from Save step → Verify → **SUCCESS**
 
-> *"RePlay stopped before touching anything consequential, named exactly which step failed, and let us fix and retry — without re-running the steps that already worked."*
+> *"Named the exact failing step. Stopped before any consequential action. Retry without re-running what already worked."*
 
 ---
 
 ## Done
 
-Total time: ~75 seconds for a live demo. Key points:
+Total time: ~75 seconds. Key points:
 - ✅ Teach once, replay safely on multiple records
-- ✅ Independent verification (reads localStorage, not trusting UI)
-- ✅ Safe stop on interface change, with named reason and retry
-- ✅ Fully local — no AI, no server, no API keys
+- ✅ Live step count badge while recording (● REC (n))
+- ✅ Independent verification — reads localStorage directly, not the UI
+- ✅ Safe stop on interface change, with exact reason + retry
+- ✅ Fully local — no AI, no server, no API key
+
+---
+
+## Vercel Deploy (one-time)
+
+```bash
+cd crm-demo
+npx vercel login      # auth with GitHub
+npx vercel --prod     # deploy — note the URL (e.g. https://replay-crm.vercel.app)
+```
+
+After deploy, add the URL to `extension/manifest.json`:
+```json
+"host_permissions": ["http://localhost:5173/*", "https://replay-crm.vercel.app/*"],
+"content_scripts": [{ "matches": ["http://localhost:5173/*", "https://replay-crm.vercel.app/*"], ... }]
+```
+Then reload the extension and navigate to the deployed URL.
