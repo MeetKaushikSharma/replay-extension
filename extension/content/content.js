@@ -297,6 +297,7 @@ function waitForConfirmation(runId, stepId, label, timeoutMs = 60000) {
     }
     document.addEventListener('__replay_confirm__', onConfirm);
     function cleanup() { clearTimeout(timer); document.removeEventListener('__replay_confirm__', onConfirm); }
+    console.log('[RePlay] CONFIRM_REQUIRED label:', label, 'runId:', runId, 'stepId:', stepId);
     notifyPanel({ type: 'CONFIRM_REQUIRED', runId, stepId, label });
   });
 }

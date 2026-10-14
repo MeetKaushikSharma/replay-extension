@@ -404,11 +404,14 @@ chrome.runtime.onMessage.addListener((msg) => {
       updateTimelineItem(msg.stepId, msg.status, msg.detail);
       break;
 
-    case 'CONFIRM_REQUIRED':
-      pendingConfirm = { runId: msg.runId, stepId: msg.stepId, label: msg.label };
-      confirmMsg.textContent = `About to execute: "${msg.label}". This is a consequential action. Proceed?`;
+    case 'CONFIRM_REQUIRED': {
+      console.log('[RePlay panel] CONFIRM_REQUIRED received, label:', msg.label, 'full msg:', JSON.stringify(msg));
+      const stepLabel = msg.label || msg.stepId || 'this step';
+      pendingConfirm = { runId: msg.runId, stepId: msg.stepId, label: stepLabel };
+      confirmMsg.textContent = `About to execute: "${stepLabel}". This is a consequential action. Proceed?`;
       confirmDialog.classList.remove('hidden');
       break;
+    }
 
     case 'REPLAY_STOPPED': {
       btnCancelReplay.classList.add('hidden');
