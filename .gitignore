@@ -2,3 +2,11 @@ node_modules/
 crm-demo/dist/
 .DS_Store
 *.log
+
+# Ignore all markdown files except README.md and DEMO_SCRIPT.md
+*.md
+**/*.md
+!README.md
+!DEMO_SCRIPT.md
+!crm-demo/README.md
+
